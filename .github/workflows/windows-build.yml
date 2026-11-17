@@ -1,0 +1,43 @@
+name: windows-build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    name: Build Windows release binary (native MSVC)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Verify PE binary
+        shell: pwsh
+        run: |
+          $exe = "target\release\matrix-cam.exe"
+          if (-not (Test-Path $exe)) { throw "matrix-cam.exe not found" }
+          $bytes = [System.IO.File]::ReadAllBytes($exe)[0..1]
+          if (($bytes[0] -ne 0x4D) -or ($bytes[1] -ne 0x5A)) { throw "not a PE binary (MZ magic missing)" }
+          Get-Item $exe | Select-Object Name, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: matrix-cam-windows-x64
+          path: target/release/matrix-cam.exe
+          if-no-files-found: error
