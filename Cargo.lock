@@ -1373,6 +1373,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "matrix-cam"
+version = "2.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "eframe",
+ "egui",
+ "nokhwa",
+ "serde",
+ "serde_json",
+ "virtualcam",
+]
+
+[[package]]
 name = "memchr"
 version = "2.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2278,20 +2292,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
-]
-
-[[package]]
-name = "matrix-cam"
-version = "2.0.0"
-dependencies = [
- "anyhow",
- "crossterm",
- "eframe",
- "egui",
- "nokhwa",
- "serde",
- "serde_json",
- "virtualcam",
 ]
 
 [[package]]
