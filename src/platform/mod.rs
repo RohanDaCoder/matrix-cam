@@ -13,7 +13,10 @@ use nokhwa::utils::{CameraFormat, CameraIndex, FrameFormat, RequestedFormat, Req
 use nokhwa::Camera;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use virtualcam::{BackendKind, Camera as VCam, PixelFormat};
+use virtualcam::{Camera as VCam, PixelFormat};
+
+/// Virtual-camera transport selection (public for the CLI parser).
+pub use virtualcam::BackendKind;
 
 /// What `main` gets back: the camera name plus a callable that runs the UI loop
 /// and finishes with config persistence.
