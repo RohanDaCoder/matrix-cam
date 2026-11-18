@@ -4,6 +4,13 @@
 //! bug: message, stack, origin, environment and the recent log).
 
 use matrix_core::report::{self, Context, Kind};
+use std::sync::Mutex;
+
+/// The report store is process-global (panic hooks must reach it from
+/// anywhere), so every test in this file holds this guard for its whole
+/// body — parallel test threads otherwise race on the shared state
+/// (exactly what the Windows CI run caught).
+static STORE_LOCK: Mutex<()> = Mutex::new(());
 
 // The report store is global state; tests reset it so they are order-safe.
 fn reset() {
@@ -12,6 +19,7 @@ fn reset() {
 
 #[test]
 fn capture_stores_message_stack_origin() {
+    let _store = STORE_LOCK.lock().unwrap();
     reset();
     report::capture(Kind::Panic, "index out of bounds", "frame 0: render\nframe 1: tick", "renderer.rs:42:9");
     let reps = report::reports_snapshot();
@@ -25,6 +33,7 @@ fn capture_stores_message_stack_origin() {
 
 #[test]
 fn context_travels_into_the_report() {
+    let _store = STORE_LOCK.lock().unwrap();
     reset();
     report::set_context(|c| {
         c.host = "web".into();
@@ -46,6 +55,7 @@ fn context_travels_into_the_report() {
 
 #[test]
 fn log_ring_keeps_most_recent_lines() {
+    let _store = STORE_LOCK.lock().unwrap();
     reset();
     for i in 0..80 {
         report::log_line(format!("line {i}"));
@@ -60,6 +70,7 @@ fn log_ring_keeps_most_recent_lines() {
 
 #[test]
 fn capture_also_appends_to_log_ring() {
+    let _store = STORE_LOCK.lock().unwrap();
     reset();
     report::capture(Kind::Warning, "camera hiccup", "", "engine");
     let log = report::log_snapshot();
@@ -71,6 +82,7 @@ fn capture_also_appends_to_log_ring() {
 
 #[test]
 fn report_cap_keeps_most_recent() {
+    let _store = STORE_LOCK.lock().unwrap();
     reset();
     for i in 0..40 {
         report::capture(Kind::Error, format!("e{i}"), "", "");
@@ -84,6 +96,7 @@ fn report_cap_keeps_most_recent() {
 
 #[test]
 fn to_text_includes_stack_and_log() {
+    let _store = STORE_LOCK.lock().unwrap();
     reset();
     report::set_context(|c| c.host = "windows-desktop".into());
     report::log_line("boot: desktop app starting");
@@ -101,6 +114,7 @@ fn to_text_includes_stack_and_log() {
 
 #[test]
 fn count_and_clear() {
+    let _store = STORE_LOCK.lock().unwrap();
     reset();
     assert_eq!(report::count(), 0);
     report::capture(Kind::Error, "a", "", "");
