@@ -25,10 +25,10 @@ jobs:
           workspaces: .
 
       - name: Run unit tests
-        run: cargo test --locked
+        run: cargo test --locked --workspace --exclude matrix-web
 
       - name: Build release binary
-        run: cargo build --release --locked
+        run: cargo build --release --locked --workspace --exclude matrix-web
 
       - name: Verify PE binary
         shell: pwsh

@@ -4,7 +4,7 @@ pub mod auto;
 pub mod settings;
 
 pub use auto::AutoConfig;
-pub use settings::{ColorMode, GlyphSet, Settings, Style, PRESETS};
+pub use settings::{ColorMode, GlyphSet, Settings, StartOverrides, Style, PRESETS};
 
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;

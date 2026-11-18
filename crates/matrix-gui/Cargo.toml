@@ -1,0 +1,9 @@
+[package]
+name = "matrix-gui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+matrix-core = { path = "../matrix-core" }
+eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts", "persistence"] }
+egui = "0.29"

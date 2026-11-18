@@ -1,9 +1,9 @@
 //! Truecolor terminal front-end. Reuses the renderer's cell grid directly —
 //! no second render pass. Row-level dirty tracking keeps writes minimal.
 
-use crate::config::{clampf, clampi, AutoConfig, ColorMode, GlyphSet, Settings, Style, Config, PRESETS};
-use crate::render::font;
-use crate::state::{Inner, Shared};
+use matrix_core::config::{clampf, clampi, AutoConfig, ColorMode, GlyphSet, Settings, Style, Config, PRESETS};
+use matrix_core::render::font;
+use matrix_core::state::{Inner, Shared};
 use crossterm::cursor::{Hide, MoveTo, Show};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use crossterm::style::Print;
@@ -215,7 +215,7 @@ pub fn run(shared: Arc<Shared>, cfg_path: Option<String>) -> anyhow::Result<()> 
                         force = true;
                     }
                     KeyCode::Char('u') => {
-                        g.update = crate::updater::UpdateState::Checking;
+                        g.update = matrix_core::update::UpdateState::Checking;
                         let shared2 = shared.clone();
                         drop(g);
                         crate::updater::spawn_check_now(shared2);
@@ -245,7 +245,7 @@ pub fn run(shared: Arc<Shared>, cfg_path: Option<String>) -> anyhow::Result<()> 
                     }
                     KeyCode::Char('W') => {
                         let name = format!("user{}", g.user_presets.len() + 1);
-                        let up = crate::config::UserPreset { name: name.clone(), set: g.eff.clone() };
+                        let up = matrix_core::config::UserPreset { name: name.clone(), set: g.eff.clone() };
                         g.user_presets.push(up);
                         g.preset_name = name;
                     }
@@ -367,7 +367,7 @@ pub fn run(shared: Arc<Shared>, cfg_path: Option<String>) -> anyhow::Result<()> 
                 state = format!("{}  retro {}fps", state, fps_val);
             }
             put(&mut out, &mut y, state)?;
-            if !matches!(upd, crate::updater::UpdateState::NotChecked) {
+            if !matches!(upd, matrix_core::update::UpdateState::NotChecked) {
                 put(&mut out, &mut y, upd.label())?;
             }
             let scroll = sel.saturating_sub((rows_n as usize).saturating_sub(10));

@@ -1,11 +1,30 @@
 //! Command-line interface: argument parsing, help text, small resolution helpers.
 
-use crate::config::Config;
-use crate::ui::Mode;
+use matrix_core::config::{Config, StartOverrides};
 use anyhow::{Context, Result};
 
 #[cfg(windows)]
 use crate::platform::BackendKind;
+
+/// Front-end selection (was `ui::Mode`).
+#[derive(PartialEq, Clone, Copy)]
+pub enum Mode {
+    Gui,
+    Tui,
+    Headless,
+}
+
+/// Map parsed flags onto the platform-neutral startup overrides consumed by
+/// `Settings::resolve`.
+pub fn overrides(a: &Args) -> StartOverrides {
+    StartOverrides {
+        preset: a.preset.clone(),
+        cols: a.cols,
+        mirror: a.mirror,
+        auto: a.auto,
+        retro: a.retro,
+    }
+}
 
 pub struct Args {
     pub mode: Mode,

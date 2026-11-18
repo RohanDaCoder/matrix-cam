@@ -1,41 +1,57 @@
-//! egui front-end: live preview + renamed, grouped settings + auto panel + telemetry.
+//! egui front-end shared by the Windows desktop app and the web build:
+//! live preview + renamed, grouped settings + auto panel + telemetry.
+//!
+//! The panel code was written as `fn settings_panel(ui, g: &mut Inner)` in
+//! the desktop app; making it reusable needed two host seams:
+//!
+//! - persistence (`Store`): the desktop saves `%APPDATA%\matrix-cam\config.json`,
+//!   the web saves `localStorage` — same JSON model, different backend.
+//! - the updater (`UpdaterHost`): the desktop panel drives a real
+//!   check/download/swap flow; the web always runs the newest deployed
+//!   version, so its host does nothing and the panel shows just `CURRENT`.
+//!
+//! Everything else — layout, widgets, presets, auto tuning, telemetry — is
+//! literally the same code on both targets.
 
-use crate::config::{AutoConfig, ColorMode, Config, GlyphSet, Settings, Style, UserPreset, PRESETS};
-use crate::state::{Inner, Shared};
-use crate::ui::theme::{self, DIMC, OK, RED, WARN};
-use crate::ui::widgets;
-use crate::updater::UpdateState;
+use matrix_core::config::{AutoConfig, ColorMode, Config, GlyphSet, Settings, Style, UserPreset, PRESETS};
+use matrix_core::state::{Inner, Shared};
+use matrix_core::time::Duration;
+use matrix_core::update::{UpdateState, CURRENT};
+use crate::theme::{self, DIMC, OK, RED, WARN};
+use crate::widgets;
 use eframe::egui;
 use egui::{Color32, RichText};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
 
-pub fn run(shared: Arc<Shared>, cfg_path: Option<String>) -> anyhow::Result<()> {
-    let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([1220.0, 780.0])
-            .with_min_inner_size([940.0, 560.0])
-            .with_title("matrix-cam"),
-        ..Default::default()
-    };
-    let s2 = shared.clone();
-    eframe::run_native(
-        "matrix-cam",
-        opts,
-        Box::new(move |cc| {
-            cc.egui_ctx.set_visuals(theme::visuals());
-            cc.egui_ctx.style_mut(|st| st.override_text_style = Some(egui::TextStyle::Monospace));
-            Ok(Box::new(GuiApp::new(s2.clone(), cfg_path.clone())))
-        }),
-    )
-    .map_err(|e| anyhow::anyhow!("eframe: {e}"))?;
-    shared.inner.lock().unwrap().quit = true;
-    Ok(())
+/// Where the settings JSON lives. Implemented by the desktop (file) and the
+/// web (localStorage) hosts.
+pub trait Store: Send + Sync {
+    /// Read the persisted model, falling back to defaults on any error.
+    fn load(&self) -> Config;
+    /// Persist the model (best effort — a failed save must not crash the UI).
+    fn save(&self, cfg: &Config);
 }
 
-struct GuiApp {
-    shared: Arc<Shared>,
-    cfg_path: Option<String>,
+/// How the running app talks to the release/update machinery. The desktop
+/// implements this with real GitHub checks + exe swaps; the web host is a
+/// no-op (the site itself is re-deployed on release).
+pub trait UpdaterHost: Send + Sync {
+    /// Label shown in the UPDATES panel ("web build" vs. build version).
+    fn build_label(&self) -> String;
+    /// Start an asynchronous check; the host reports the result through
+    /// `Inner::update` when done (desktop spawns a thread).
+    fn check_now(&self, shared: Arc<Shared>);
+    /// Begin download-and-install, if the state says one is available.
+    fn install(&self, shared: Arc<Shared>);
+    /// `true` when "download & restart" is a meaningful button (desktop only).
+    fn can_install(&self) -> bool;
+}
+
+/// The GUI front-end, shared by `matrix-cli` (native) and `matrix-web` (wasm).
+pub struct GuiApp {
+    pub shared: Arc<Shared>,
+    store: Arc<dyn Store>,
+    updater: Arc<dyn UpdaterHost>,
     tex: Option<egui::TextureHandle>,
     tex_serial: u64,
     new_name: String,
@@ -43,17 +59,24 @@ struct GuiApp {
 }
 
 impl GuiApp {
-    fn new(shared: Arc<Shared>, cfg_path: Option<String>) -> Self {
-        GuiApp { shared, cfg_path, tex: None, tex_serial: 0, new_name: String::new(), show_stats: true }
+    pub fn new(shared: Arc<Shared>, store: Arc<dyn Store>, updater: Arc<dyn UpdaterHost>) -> Self {
+        GuiApp { shared, store, updater, tex: None, tex_serial: 0, new_name: String::new(), show_stats: true }
     }
 
     fn save(&self) {
         let g = self.shared.inner.lock().unwrap();
-        let mut c = Config::load(self.cfg_path.as_deref());
+        let mut c = self.store.load();
         c.set = Some(g.set.clone());
         c.auto = g.auto.clone();
         c.user_presets = g.user_presets.clone();
-        let _ = c.save(self.cfg_path.as_deref());
+        self.store.save(&c);
+    }
+
+    /// The shared egui frame setup: dark hacker theme + monospace, same on
+    /// desktop and web.
+    pub fn style_ctx(ctx: &egui::Context) {
+        ctx.set_visuals(theme::visuals());
+        ctx.style_mut(|st| st.override_text_style = Some(egui::TextStyle::Monospace));
     }
 }
 
@@ -101,11 +124,11 @@ impl eframe::App for GuiApp {
                     g.paused = !g.paused;
                 }
                 if ui.button("💾 save").clicked() {
-                    let mut c = Config::load(self.cfg_path.as_deref());
+                    let mut c = self.store.load();
                     c.set = Some(g.set.clone());
                     c.auto = g.auto.clone();
                     c.user_presets = g.user_presets.clone();
-                    let _ = c.save(self.cfg_path.as_deref());
+                    self.store.save(&c);
                 }
                 if ui.button("⟲ reset preset").clicked() {
                     let name = g.preset_name.clone();
@@ -452,42 +475,44 @@ impl GuiApp {
 
         // ===== UPDATES =====
         section(ui, "UPDATES");
+        ui.label(format!("this build: {}", self.updater.build_label()));
         let upd = g.update.clone();
-        ui.label(format!("this build: v{}", crate::updater::CURRENT));
         ui.monospace(upd.label());
-        match &upd {
-            UpdateState::Available { version, notes, size } => {
-                ui.separator();
-                ui.label(format!(
-                    "new version {version} ({:.1} MB) — release notes:",
-                    *size as f32 / 1_000_000.0
-                ));
-                egui::ScrollArea::vertical()
-                    .id_salt("upd-notes")
-                    .max_height(140.0)
-                    .show(ui, |ui| ui.monospace(notes.trim()));
-                if ui.button("⬇ download & restart").clicked() {
-                    let shared = self.shared.clone();
-                    std::thread::spawn(move || crate::updater::ui_install(shared));
+        if self.updater.can_install() {
+            match &upd {
+                UpdateState::Available { version, notes, size } => {
+                    ui.separator();
+                    ui.label(format!(
+                        "new version {version} ({:.1} MB) — release notes:",
+                        *size as f32 / 1_000_000.0
+                    ));
+                    egui::ScrollArea::vertical()
+                        .id_salt("upd-notes")
+                        .max_height(140.0)
+                        .show(ui, |ui| ui.monospace(notes.trim()));
+                    if ui.button("⬇ download & restart").clicked() {
+                        let shared = self.shared.clone();
+                        let host = self.updater.clone();
+                        std::thread::spawn(move || host.install(shared));
+                    }
                 }
-            }
-            UpdateState::Latest { .. } | UpdateState::NotChecked | UpdateState::Checking => {
-                if ui
-                    .button("⟳ check now")
-                    .on_hover_text("Ask GitHub for a newer matrix-cam release right now.")
-                    .clicked()
-                {
-                    g.update = crate::updater::UpdateState::Checking;
-                    let shared = self.shared.clone();
-                    std::thread::spawn(move || {
-                        crate::updater::spawn_check_now(shared);
-                    });
+                UpdateState::Latest { .. } | UpdateState::NotChecked | UpdateState::Checking => {
+                    if ui
+                        .button("⟳ check now")
+                        .on_hover_text("Ask GitHub for a newer matrix-cam release right now.")
+                        .clicked()
+                    {
+                        g.update = UpdateState::Checking;
+                        let shared = self.shared.clone();
+                        let host = self.updater.clone();
+                        std::thread::spawn(move || host.check_now(shared));
+                    }
                 }
+                _ => {}
             }
-            _ => {}
+            ui.checkbox(&mut g.cfg_update_on_start, "Check for updates on start")
+                .on_hover_text("Look for a newer release each time matrix-cam starts (never auto-installs). Disable here or with --no-update-check.");
         }
-        ui.checkbox(&mut g.cfg_update_on_start, "Check for updates on start")
-            .on_hover_text("Look for a newer release each time matrix-cam starts (never auto-installs). Disable here or with --no-update-check.");
 
         // ===== TELEMETRY =====
         if self.show_stats {
@@ -510,3 +535,6 @@ impl GuiApp {
 
 #[allow(dead_code)]
 fn _mutex_import(_: &Mutex<Inner>) {}
+
+#[allow(unused_imports)]
+use CURRENT as _CURRENT;

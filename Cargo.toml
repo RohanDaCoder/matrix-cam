@@ -1,25 +1,17 @@
-[package]
-name = "matrix-cam"
-version = "2.2.0"
+[workspace]
+resolver = "2"
+members = [
+    "crates/matrix-core",
+    "crates/matrix-gui",
+    "crates/matrix-cli",
+    "crates/matrix-web",
+]
+
+[workspace.package]
+version = "2.3.0"
 edition = "2021"
 
-[dependencies]
-eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts", "persistence"] }
-egui = "0.29"
-crossterm = "0.28"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-anyhow = "1"
-ureq = "2"
-semver = "1"
-
-# Camera capture + virtual camera only exist on Windows; everything else
-# (cli, config, render, auto, ui, pipeline) is platform neutral so it can be
-# type-checked anywhere with plain `cargo check`.
-[target.'cfg(windows)'.dependencies]
-nokhwa = { version = "0.10", features = ["input-native", "decoding", "camera-sync-impl"] }
-virtualcam = "1"
-
+# Desktop release profile (the web crate carries its own slimmer one).
 [profile.release]
 opt-level = 3
 lto = "thin"

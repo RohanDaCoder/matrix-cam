@@ -17,46 +17,15 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 use std::sync::{Arc, Mutex};
 
-use crate::state::{Inner, Shared};
+use matrix_core::state::{Inner, Shared};
 
 pub const OWNER: &str = "rohandacoder";
 pub const REPO: &str = "matrix-cam";
-/// Version of this build (checked against release tags).
-pub const CURRENT: &str = env!("CARGO_PKG_VERSION");
-
-/// What the user needs to know about an update check / download.
-#[derive(Clone, Debug, PartialEq)]
-pub enum UpdateState {
-    /// No check performed yet.
-    NotChecked,
-    /// Check running (background thread).
-    Checking,
-    /// Newest release is what we already run.
-    Latest { version: String },
-    /// Newer release found.
-    Available { version: String, notes: String, size: u64 },
-    /// Asset download in progress, 0-100.
-    Downloading { version: String, pct: u32 },
-    /// New exe installed; restart pending.
-    Ready { version: String },
-    /// Check or install failed.
-    Failed { why: String },
-}
-
-impl UpdateState {
-    /// One-line text for the GUI panel / TUI status line.
-    pub fn label(&self) -> String {
-        match self {
-            UpdateState::NotChecked => "not checked".into(),
-            UpdateState::Checking => "checking…".into(),
-            UpdateState::Latest { version } => format!("up to date ({version})"),
-            UpdateState::Available { version, .. } => format!("update available: {version}"),
-            UpdateState::Downloading { version, pct } => format!("downloading {version}: {pct}%"),
-            UpdateState::Ready { version } => format!("{version} installed — restart to apply"),
-            UpdateState::Failed { why } => format!("update failed: {why}"),
-        }
-    }
-}
+/// Version of this build — reported by the desktop updater.
+pub use matrix_core::update::CURRENT;
+/// Update-state model + label (moved to `matrix_core::update` so the web
+/// front-end can display it too).
+pub use matrix_core::update::{UpdateState, is_newer};
 
 /// The release we would install.
 #[derive(Clone, Debug)]
@@ -113,21 +82,6 @@ fn fetch_latest_release() -> Result<Option<Release>> {
         return Ok(None);
     }
     Ok(Some(rel))
-}
-
-/// Semver precedence with the usual `v` prefix tolerated.
-pub fn is_newer(candidate: &str, current: &str) -> bool {
-    fn norm(t: &str) -> &str {
-        t.trim().trim_start_matches(['v', 'V'])
-    }
-    let (Ok(c), Ok(k)) = (
-        norm(candidate).parse::<semver::Version>(),
-        norm(current).parse::<semver::Version>(),
-    ) else {
-        // Unparseable tags are never offered as updates.
-        return false;
-    };
-    c > k
 }
 
 /// Check GitHub for a newer release. `Ok(None)` = already up to date.
@@ -388,26 +342,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn semver_ordering() {
-        assert!(is_newer("v2.2.0", "2.1.0"));
-        assert!(is_newer("2.10.0", "v2.9.2"));
-        assert!(!is_newer("v2.1.0", "2.1.0"));
-        assert!(!is_newer("v2.0.9", "2.1.0"));
-        // prerelease of a higher version still beats a lower release…
-        assert!(is_newer("2.2.0-rc1", "2.1.0"));
-        // …but never beats its own release version
-        assert!(!is_newer("2.2.0-rc1", "2.2.0"));
-        assert!(is_newer("2.2.0-rc2", "2.2.0-rc1")); // rc2 > rc1
-    }
-
-    #[test]
-    fn junk_tags_are_not_updates() {
-        assert!(!is_newer("", "2.1.0"));
-        assert!(!is_newer("latest", "2.1.0"));
-        assert!(!is_newer("v2", "2.1.0"));
-    }
-
-    #[test]
     fn release_json_parses() {
         let body = r#"{
             "tag_name": "v2.2.0",
@@ -430,14 +364,5 @@ mod tests {
         let body = r#"{"message":"Not Found","documentation_url":"x"}"#;
         let rel: Release = serde_json::from_str(body).unwrap();
         assert!(rel.tag_name.is_none());
-    }
-
-    #[test]
-    fn state_labels_read_well() {
-        assert_eq!(UpdateState::NotChecked.label(), "not checked");
-        assert_eq!(
-            UpdateState::Available { version: "v2.2.0".into(), notes: String::new(), size: 1 }.label(),
-            "update available: v2.2.0"
-        );
     }
 }

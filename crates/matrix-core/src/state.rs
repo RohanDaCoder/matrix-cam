@@ -4,7 +4,7 @@ use crate::auto::analyze::Stats;
 use crate::auto::controller::AutoReadout;
 use crate::config::{AutoConfig, Settings, UserPreset};
 use crate::render::Grid;
-use crate::updater::UpdateState;
+use crate::update::UpdateState;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, Default)]

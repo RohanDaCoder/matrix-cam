@@ -2,11 +2,11 @@
 //! Everything else in the crate is platform neutral.
 
 use crate::cli::Args;
-use crate::config::Config;
-use crate::config::settings::Settings;
-use crate::pipeline::{self, FrameSink, FrameSource};
-use crate::state::{FpsLimit, Inner, Shared, Status};
-use crate::ui::{self, Mode};
+use matrix_core::config::Config;
+use matrix_core::config::Settings;
+use matrix_core::pipeline::{self, FrameSink, FrameSource};
+use matrix_core::state::{FpsLimit, Inner, Shared, Status};
+use crate::cli::Mode;
 use anyhow::{Context, Result};
 use nokhwa::pixel_format::RgbFormat;
 use nokhwa::utils::{CameraFormat, CameraIndex, FrameFormat, RequestedFormat, RequestedFormatType, Resolution};
@@ -32,8 +32,8 @@ impl Runner {
     pub fn run(self) -> Result<()> {
         let Runner { shared, cfg, cfg_path, mode, threads } = self;
         match mode {
-            Mode::Gui => crate::ui::gui::run(shared.clone(), cfg_path.clone())?,
-            Mode::Tui => crate::ui::tui::run(shared.clone(), cfg_path.clone())?,
+            Mode::Gui => crate::run_gui(shared.clone(), cfg_path.clone())?,
+            Mode::Tui => crate::tui::run(shared.clone(), cfg_path.clone())?,
             Mode::Headless => {
                 println!("headless — press q to quit");
                 crossterm::terminal::enable_raw_mode()?;

@@ -1,0 +1,8 @@
+[build]
+target = "web/index.html"
+dist = "dist"
+public_url = "/matrix-cam/"
+
+[serve]
+addresses = ["0.0.0.0"]
+port = 8080

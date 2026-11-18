@@ -53,6 +53,12 @@ impl Renderer {
         self.last_grid.clone()
     }
 
+    /// Output dimensions (set at construction; the engine reads them to
+    /// publish `View` frames). Rounded to even numbers like the CLI does.
+    pub fn dims(&self) -> (u32, u32) {
+        (self.w as u32, self.h as u32)
+    }
+
     /// Last published frame without re-rendering (used while paused / on capture hiccups).
     pub fn frame_arc(&self) -> Option<Arc<Vec<u8>>> {
         self.pool.iter().find_map(|p| p.clone())
@@ -169,6 +175,18 @@ impl Renderer {
                 col_rest = r5;
                 jobs.push((gy0, gy1, px, o, a1, a2, a3, a4, a5));
             }
+            // wasm has no std threads: render rows inline on this thread.
+            // (threads.max(1) already guarantees `jobs` has at least one job
+            // on native, so the two paths produce identical output.)
+            #[cfg(target_arch = "wasm32")]
+            for job in jobs {
+                let (gy0, gy1, px, o, rw, rd, rgb, ix, cl) = job;
+                rows_job(
+                    gy0, gy1, px, o, rw, rd, rgb, ix, cl, src, sw, crop, gw, cw, chh, w,
+                    atlas_ref, set, lut, serial,
+                );
+            }
+            #[cfg(not(target_arch = "wasm32"))]
             std::thread::scope(|sc| {
                 for (k, job) in jobs.into_iter().enumerate() {
                     sc.spawn(move || {

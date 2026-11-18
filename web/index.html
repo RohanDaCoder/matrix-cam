@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>matrix-cam — webcam → character effects</title>
+    <style>
+        html, body { margin: 0; padding: 0; height: 100%; background: #08090c; }
+        canvas#matrix-cam { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+        /* eframe takes over the whole canvas; this notice sits above it until
+           the wasm module boots, then the GUI paints over it. */
+        .boot { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
+                color: #8f8d85; font: 14px monospace; pointer-events: none; z-index: 10; }
+        .boot.hidden { display: none; }
+        a { color: #ff2f2f; }
+    </style>
+    <link data-trunk rel="icon" href="favicon.svg"/>
+    <link data-trunk rel="rust" href="../crates/matrix-web/Cargo.toml" data-bin="matrix-cam-web" data-type="main"/>
+
+</head>
+<body>
+    <div class="boot" id="boot">▚ matrix-cam web — loading engine…</div>
+    <canvas id="matrix-cam"></canvas>
+    <script>
+        // hide the boot notice once the wasm module has painted its first frame
+        const check = setInterval(() => {
+            const c = document.getElementById('matrix-cam');
+            if (c && c.width > 0) {
+                document.getElementById('boot').classList.add('hidden');
+                clearInterval(check);
+            }
+        }, 200);
+    </script>
+</body>
+</html>

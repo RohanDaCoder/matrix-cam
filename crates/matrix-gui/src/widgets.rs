@@ -1,6 +1,6 @@
 //! Reusable setting widgets for the GUI.
 
-use crate::ui::theme::RED;
+use crate::theme::RED;
 use egui::{Checkbox, Color32, Slider, Ui};
 
 /// Slider that shows the live auto value (read-only, red `A` marker) when the

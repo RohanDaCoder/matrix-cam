@@ -3,7 +3,7 @@
 use crate::auto::analyze::{Analyzer, Stats};
 use crate::config::{clampf, clampi, AutoConfig, ColorMode, Settings};
 use crate::render::tone::tone_from_levels;
-use std::time::Instant;
+use crate::time::Instant;
 
 #[derive(Clone, Debug, Default)]
 pub struct AutoReadout {
@@ -39,9 +39,13 @@ pub struct Auto {
 impl Auto {
     pub fn new() -> Self {
         let now = Instant::now();
+        // `now - 1s` underflows web_time (performance.now starts near 0 on a
+        // fresh page), which would panic; saturate instead — the first target
+        // recompute fires immediately either way.
+        let last_target = now.checked_sub(crate::time::Duration::from_secs(1)).unwrap_or(now);
         Auto {
             prev: now,
-            last_target: now - std::time::Duration::from_secs(1),
+            last_target,
             t_bri: 0.0,
             t_con: 0.0,
             t_cols: 150.0,

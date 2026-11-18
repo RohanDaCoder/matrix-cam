@@ -1,8 +1,20 @@
 //! The user-facing effect settings, built-in presets and the new character options.
 
-use crate::cli::Args;
-use crate::config::Config;
 use serde::{Deserialize, Serialize};
+use crate::config::Config;
+
+/// Startup overrides injected by the host (CLI flags on desktop, defaults
+/// on web). `Settings::resolve` applies them to the saved config — this is
+/// the seam that keeps matrix-core free of any argument parsing.
+#[derive(Clone, Debug, Default)]
+pub struct StartOverrides {
+    pub preset: Option<String>,
+    pub cols: Option<u32>,
+    pub mirror: Option<bool>,
+    pub auto: Option<bool>,
+    /// 8-bit retro mode (`--retro`): apply the retro look on top.
+    pub retro: bool,
+}
 
 /// Which character set the text style draws with (new "character settings").
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize, Default)]
@@ -214,11 +226,11 @@ impl Settings {
         s
     }
 
-    /// Pick starting settings: CLI preset > saved settings > built-in default,
-    /// then apply the `--cols` / `--mirror` overrides.
-    pub fn resolve(cfg: &mut Config, args: &Args) -> anyhow::Result<Settings> {
+    /// Pick starting settings: host preset > saved settings > built-in default,
+    /// then apply the cols / mirror overrides and the 8-bit retro look.
+    pub fn resolve(cfg: &mut Config, ov: &StartOverrides) -> anyhow::Result<Settings> {
         let mut set = cfg.set.clone().unwrap_or_else(|| Settings::preset("ghost"));
-        if let Some(p) = &args.preset {
+        if let Some(p) = &ov.preset {
             if let Some(up) = cfg.user_presets.iter().find(|u| &u.name == p) {
                 set = up.set.clone();
             } else if PRESETS.contains(&p.as_str()) {
@@ -227,14 +239,17 @@ impl Settings {
                 anyhow::bail!("unknown preset '{p}'");
             }
         }
-        if let Some(c) = args.cols {
+        if let Some(c) = ov.cols {
             set.cols = c.clamp(40, 220);
         }
-        if let Some(m) = args.mirror {
+        if let Some(m) = ov.mirror {
             set.mirror = m;
         }
-        if let Some(a) = args.auto {
+        if let Some(a) = ov.auto {
             cfg.auto.enabled = a;
+        }
+        if ov.retro {
+            set.apply_retro();
         }
         Ok(set)
     }

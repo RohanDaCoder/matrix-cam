@@ -1,9 +1,15 @@
-# matrix-cam 2.2 — Windows 11
+# matrix-cam 2.3 — Windows 11 + Web
 
 Webcam → dot-matrix / character glitch effect → a real camera device. GUI **and** TUI,
 live preview, plain-language settings, character-set options, a retro FPS limiter,
 a one-click 8-bit look, a built-in **self-updater**, and an adaptive auto mode.
 No overlays, no scenes.
+
+**New in 2.3:** a multi-crate Cargo workspace (engine / shared GUI / desktop /
+web) and a **web version** of the same app — try it live at
+`https://rohandacoder.github.io/matrix-cam/` (camera + effects in the browser,
+settings saved to localStorage). Desktop and web run the identical engine and
+UI code.
 
 ## Setup (once)
 1. Windows 11 build 22000+, Rust stable MSVC, VS 2022 Build Tools (C++ workload).
@@ -28,37 +34,50 @@ target\release\matrix-cam.exe --list          :: devices + backends
 ```
 Pick the **VCam** device in Teams/Zoom/OBS/Chrome.
 
-## Project layout
+## Project layout (Cargo workspace)
 ```
-src/
-  cli.rs           argument parsing, --help
-  main.rs          startup order + non-Windows stub
-  config/
-    settings.rs    Settings, presets, character sets (GlyphSet)
-    auto.rs        AutoConfig (what auto may touch)
-    mod.rs         Config (persisted JSON)
-  state.rs         Shared/Inner state + Status/View/FpsLimit
-  render/
-    renderer.rs    fused parallel pass (downsample → tone → draw)
-    atlas.rs       cached glyph/dot/cell masks
-    font.rs        5x7 bitmap glyph tables per character set
-    grid.rs        cell grid shared with analyzer + TUI
-    tone.rs        brightness/contrast LUT
-    fx.rs          glitch / scanlines / noise
-  auto/
-    analyze.rs     histogram, detail, motion, redness stats
-    controller.rs  adaptive controller (glide + interval)
-  pipeline.rs      camera → render → virtual camera loop (traits + FPS limiter)
-  platform/        Windows-only nokhwa + virtualcam plumbing
-  updater.rs       self-updater (releases check, download, swap, restart)
-  ui/
-    gui.rs         egui front-end (settings redesign)
-    tui.rs         crossterm front-end
-    widgets.rs     shared setting widgets (tooltips, auto-aware)
-    theme.rs       colors + text gauges
+crates/
+  matrix-core/     the engine — platform neutral, no UI, no arg parsing
+    config/         Settings, presets, character sets, AutoConfig, Config JSON
+    render/         renderer (fused parallel pass), atlas, font, grid, tone, fx
+    auto/           analyze (histogram/detail/motion/redness) + adaptive controller
+    state.rs        Shared/Inner + Status/View/FpsLimit
+    pipeline.rs      camera → render → sink worker loop (traits + FPS limiter)
+    engine.rs        per-tick engine — the loop body shared by desktop AND web
+    time.rs          Instant/Duration alias (web_time on wasm32, std elsewhere)
+    update.rs        UpdateState model + semver compare (shared UI vocabulary)
+  matrix-gui/      the egui front-end — one codebase, two hosts
+    gui.rs           GuiApp + `Store` (persistence seam) + `UpdaterHost` seam
+    widgets.rs theme.rs
+  matrix-cli/      the Windows desktop app
+    main.rs          startup order, FileStore, DesktopUpdater, native window
+    cli.rs tui.rs updater.rs platform.rs (nokhwa + virtualcam, cfg(windows))
+  matrix-web/      the browser app (eframe wasm + trunk)
+    main.rs          getUserMedia camera, localStorage Store, no-op UpdaterHost,
+                     engine tick per repaint
+web/index.html    trunk entry (canvas #matrix-cam)
+Trunk.toml         trunk build config (wasm32, dist/, public_url /matrix-cam/)
 ```
-Camera/virtual-camera crates are gated to `cfg(windows)`; everything else
-type-checks on any OS with plain `cargo check`.
+The engine renders rows in `std::thread::scope` workers on desktop and inline
+on a single thread on wasm — same code, `cfg`-selected path. Camera/virtual-camera
+crates are gated to `cfg(windows)`; matrix-web's `main` is gated to
+`cfg(target_arch = "wasm32")`. Everything type-checks on any OS with plain
+`cargo check`.
+
+## Web version
+The same app compiled to WebAssembly: identical settings panel, presets,
+auto adjust, retro look and FPS limiter; the preview loop runs `Engine::tick`
+once per repaint instead of a worker thread.
+- **URL:** `https://rohandacoder.github.io/matrix-cam/` (auto-deployed by the
+  `web-deploy` workflow on every push to main).
+- **Camera:** browser `getUserMedia` — click once in the window to grant
+  permission (browsers require a gesture). Served over HTTPS by GitHub Pages.
+- **Persistence:** settings live in `localStorage["matrix-cam-config"]` —
+  the same JSON model the desktop writes to `%APPDATA%`.
+- **No self-updater:** the site re-deploys on release, so the web build is
+  always current.
+- **Run locally:** `trunk serve` then open http://localhost:8080 (camera needs
+  localhost/HTTPS).
 
 ## Settings (renamed)
 Old niche names → plain names:
@@ -143,8 +162,11 @@ values are preserved and return when you disable auto.
 
 ## CI / Releases
 - `windows-build` (on push to main): native `windows-latest` MSVC build; unit
-  tests first, then `cargo build --release --locked`, PE-magic verification and
-  the `matrix-cam-windows-x64` artifact.
+  tests first, then `cargo build --release --locked --workspace --exclude
+  matrix-web`, PE-magic verification and the `matrix-cam-windows-x64` artifact.
+- `web-deploy` (on push to main): ubuntu trunk build for `wasm32-unknown-unknown`,
+  artifact smoke-check, then deploy `dist/` to GitHub Pages
+  (`actions/configure-pages` + `actions/deploy-pages`, workflow-sourced Pages).
 - `release` (on pushing a `v*` tag): same native build + tests, packages
   `matrix-cam.exe` + zip + sha256 and publishes the GitHub release via
   `softprops/action-gh-release` with generated release notes. The self-updater

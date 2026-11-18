@@ -6,10 +6,12 @@ pub struct Rng(pub u64);
 
 impl Rng {
     pub fn new() -> Self {
-        let n = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos() as u64)
-            .unwrap_or(0x9E37_79B9);
+        // Seed from the platform clock. `Instant` is the time alias (web_time
+        // on wasm, std elsewhere); a nonzero fallback keeps the stream alive
+        // if the clock is unavailable.
+        let n = crate::time::Instant::now()
+            .elapsed()
+            .as_nanos() as u64;
         Rng(n | 1)
     }
     pub fn next(&mut self) -> u64 {
