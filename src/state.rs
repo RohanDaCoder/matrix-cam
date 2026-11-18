@@ -4,6 +4,7 @@ use crate::auto::analyze::Stats;
 use crate::auto::controller::AutoReadout;
 use crate::config::{AutoConfig, Settings, UserPreset};
 use crate::render::Grid;
+use crate::updater::UpdateState;
 use std::sync::{Arc, Mutex};
 
 #[derive(Clone, Debug, Default)]
@@ -55,6 +56,10 @@ pub struct Inner {
     pub cfg_preview_fps: u32,
     pub cfg_tui_fps: u32,
     pub fps_limit: FpsLimit,
+    /// Self-updater state, driven by the background check thread.
+    pub update: UpdateState,
+    /// Saved "check for updates on start" preference (persisted via Runner).
+    pub cfg_update_on_start: bool,
 }
 
 pub struct Shared {

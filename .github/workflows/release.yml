@@ -1,0 +1,61 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release-windows:
+    name: Build & release Windows binary (tag ${{ github.ref_name }})
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust stable (MSVC)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .
+
+      - name: Run unit tests
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --release --locked
+
+      - name: Verify PE binary
+        shell: pwsh
+        run: |
+          $exe = "target\release\matrix-cam.exe"
+          if (-not (Test-Path $exe)) { throw "matrix-cam.exe not found" }
+          $bytes = [System.IO.File]::ReadAllBytes($exe)[0..1]
+          if (($bytes[0] -ne 0x4D) -or ($bytes[1] -ne 0x5A)) { throw "not a PE binary (MZ magic missing)" }
+          Get-Item $exe | Select-Object Name, Length
+
+      - name: Package (exe + README)
+        shell: pwsh
+        run: |
+          Compress-Archive -Path target\release\matrix-cam.exe, README.md -DestinationPath matrix-cam-windows-x64.zip
+          $sha = (Get-FileHash matrix-cam-windows-x64.zip -Algorithm SHA256).Hash.ToLower()
+          "$sha  matrix-cam-windows-x64.zip" | Out-File -Encoding ascii matrix-cam-windows-x64.zip.sha256
+          Write-Host "zip sha256: $sha"
+
+      - name: Create GitHub release (softprops/action-gh-release)
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: matrix-cam ${{ github.ref_name }}
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          files: |
+            target/release/matrix-cam.exe
+            matrix-cam-windows-x64.zip
+            matrix-cam-windows-x64.zip.sha256

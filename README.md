@@ -1,8 +1,9 @@
-# matrix-cam 2.1 — Windows 11
+# matrix-cam 2.2 — Windows 11
 
 Webcam → dot-matrix / character glitch effect → a real camera device. GUI **and** TUI,
 live preview, plain-language settings, character-set options, a retro FPS limiter,
-and an adaptive auto mode. No overlays, no scenes.
+a one-click 8-bit look, a built-in **self-updater**, and an adaptive auto mode.
+No overlays, no scenes.
 
 ## Setup (once)
 1. Windows 11 build 22000+, Rust stable MSVC, VS 2022 Build Tools (C++ workload).
@@ -20,6 +21,9 @@ and an adaptive auto mode. No overlays, no scenes.
 target\release\matrix-cam.exe                 :: GUI (default)
 target\release\matrix-cam.exe --tui           :: terminal UI
 target\release\matrix-cam.exe --headless      :: no UI
+target\release\matrix-cam.exe --retro         :: 8-bit retro look + 12fps cap
+target\release\matrix-cam.exe --check-update   :: newest release info
+target\release\matrix-cam.exe --update        :: self-update + restart
 target\release\matrix-cam.exe --list          :: devices + backends
 ```
 Pick the **VCam** device in Teams/Zoom/OBS/Chrome.
@@ -46,6 +50,7 @@ src/
     controller.rs  adaptive controller (glide + interval)
   pipeline.rs      camera → render → virtual camera loop (traits + FPS limiter)
   platform/        Windows-only nokhwa + virtualcam plumbing
+  updater.rs       self-updater (releases check, download, swap, restart)
   ui/
     gui.rs         egui front-end (settings redesign)
     tui.rs         crossterm front-end
@@ -88,6 +93,25 @@ pixel-game feel. Persisted in the config; the top bar shows `RETRO 12fps` while
 active. The limiter paces the actual pipeline output, so the virtual camera
 itself runs at the capped rate.
 
+## 8-bit retro mode
+One click (GUI **8-bit retro** button in LOOK, TUI `r`, CLI `--retro`):
+pixel-block shape, halved detail, stronger scanlines/static/glitch and phosphor
+trails — colors are kept, so a green "term" look stays green. Stack it with the
+retro FPS limiter for the full early-console experience.
+
+## Self-updater
+Checks the GitHub releases of `rohandacoder/matrix-cam` and installs the newest
+`matrix-cam.exe` asset in place (rename-then-swap, with rollback if the move
+fails; the replaced exe is kept as `matrix-cam.exe.old` until the next start).
+- On start (config `update_on_start`, on by default) a background check runs;
+  the GUI **UPDATES** panel and the TUI status line show the result.
+- GUI: **check now**, or **download & restart** with release notes shown first.
+- TUI: `u` checks, `U` downloads + installs + restarts.
+- CLI: `--check-update` prints the newest release; `--update` installs and
+  restarts; `--no-update-check` skips the on-start check.
+Updates only ever move forward (real semver comparison, `v`-prefix ok,
+prereleases handled); a release with no `.exe` asset is never offered.
+
 ## Auto adjust
 Analyses the live grid every frame (histogram, detail, motion, redness) and drives:
 
@@ -117,7 +141,11 @@ values are preserved and return when you disable auto.
 - GUI repaints at `preview_fps`, uploads a texture only when the frame serial changes.
 - Mask atlases rebuild only when detail/style/glow/character-set change; auto quantises detail to 4.
 
-## CI
-GitHub Actions builds the Windows release binary natively (workflow `windows-build`:
-`windows-latest` runner, Rust stable MSVC). Download `matrix-cam.exe` from the latest
-run artifact.
+## CI / Releases
+- `windows-build` (on push to main): native `windows-latest` MSVC build; unit
+  tests first, then `cargo build --release --locked`, PE-magic verification and
+  the `matrix-cam-windows-x64` artifact.
+- `release` (on pushing a `v*` tag): same native build + tests, packages
+  `matrix-cam.exe` + zip + sha256 and publishes the GitHub release via
+  `softprops/action-gh-release` with generated release notes. The self-updater
+  installs exactly these release assets.

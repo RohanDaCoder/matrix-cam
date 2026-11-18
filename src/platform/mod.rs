@@ -65,6 +65,7 @@ impl Runner {
             cfg.threads = threads as u32;
             cfg.fps_limit_enabled = g.fps_limit.enabled;
             cfg.fps_limit_fps = g.fps_limit.fps;
+            cfg.update_on_start = g.cfg_update_on_start;
         }
         cfg.save(cfg_path.as_deref())?;
         println!("saved config → {}", Config::path(cfg_path.as_deref()).display());
@@ -102,6 +103,9 @@ pub fn windows_build() -> Option<u32> {
     }
     None
 }
+
+/// Background update check on start: see `updater::spawn_check`.
+/// 8-bit retro look: see `Settings::apply_retro` (config/settings.rs).
 
 fn open_camera(index: u32) -> Result<Camera> {
     let closest = RequestedFormat::new::<RgbFormat>(RequestedFormatType::Closest(CameraFormat::new(
@@ -155,10 +159,14 @@ impl FrameSink for VCamSink {
 pub fn start(
     args: Args,
     mut cfg: Config,
-    set: Settings,
+    mut set: Settings,
     preset_name: String,
     threads: usize,
 ) -> Result<(String, Runner)> {
+    if args.retro {
+        set.apply_retro();
+    }
+    let update_check = cfg.update_on_start && !args.no_update_check;
     let cam = open_camera(args.camera)?;
     let cam_name = nokhwa::query(nokhwa::native_api_backend().unwrap_or(nokhwa::utils::ApiBackend::MediaFoundation))
         .ok()
@@ -174,6 +182,11 @@ pub fn start(
     let backend = vcam.backend().to_string();
 
     let fps_limit = FpsLimit { enabled: cfg.fps_limit_enabled, fps: cfg.fps_limit_fps.max(1) };
+    let update = if update_check {
+        crate::updater::UpdateState::Checking
+    } else {
+        crate::updater::UpdateState::NotChecked
+    };
     let shared = Arc::new(Shared {
         inner: Mutex::new(Inner {
             eff: set.clone(),
@@ -199,8 +212,14 @@ pub fn start(
             cfg_preview_fps: cfg.preview_fps.max(5),
             cfg_tui_fps: cfg.tui_fps.max(5),
             fps_limit,
+            update,
+            cfg_update_on_start: update_check,
         }),
     });
+
+    if update_check {
+        crate::updater::spawn_check(shared.clone());
+    }
 
     let want_grid = args.mode == Mode::Tui;
     pipeline::spawn(

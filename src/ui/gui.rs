@@ -4,6 +4,7 @@ use crate::config::{AutoConfig, ColorMode, Config, GlyphSet, Settings, Style, Us
 use crate::state::{Inner, Shared};
 use crate::ui::theme::{self, DIMC, OK, RED, WARN};
 use crate::ui::widgets;
+use crate::updater::UpdateState;
 use eframe::egui;
 use egui::{Color32, RichText};
 use std::sync::{Arc, Mutex};
@@ -242,6 +243,23 @@ impl GuiApp {
                 }
             }
         });
+        ui.horizontal(|ui| {
+            if ui
+                .button("🕹 8-bit retro")
+                .on_hover_text("One-click 8-bit look: pixel blocks, halved detail, strong scanlines/static and phosphor trails. Turn on the retro FPS limiter below for the full effect.")
+                .clicked()
+            {
+                g.set.apply_retro();
+                g.preset_name = "custom".into();
+            }
+            if ui
+                .button("⏱ retro FPS: on")
+                .on_hover_text("Cap the output frame rate (12 fps default) for the choppy retro-game feel. Adjust the exact rate in the RETRO FPS section.")
+                .clicked()
+            {
+                g.fps_limit.enabled = true;
+            }
+        });
         widgets::slider_u32(
             ui,
             "Detail",
@@ -431,6 +449,45 @@ impl GuiApp {
         if ui.button("Reset auto to defaults").clicked() {
             g.auto = AutoConfig { enabled: g.auto.enabled, ..Default::default() };
         }
+
+        // ===== UPDATES =====
+        section(ui, "UPDATES");
+        let upd = g.update.clone();
+        ui.label(format!("this build: v{}", crate::updater::CURRENT));
+        ui.monospace(upd.label());
+        match &upd {
+            UpdateState::Available { version, notes, size } => {
+                ui.separator();
+                ui.label(format!(
+                    "new version {version} ({:.1} MB) — release notes:",
+                    *size as f32 / 1_000_000.0
+                ));
+                egui::ScrollArea::vertical()
+                    .id_salt("upd-notes")
+                    .max_height(140.0)
+                    .show(ui, |ui| ui.monospace(notes.trim()));
+                if ui.button("⬇ download & restart").clicked() {
+                    let shared = self.shared.clone();
+                    std::thread::spawn(move || crate::updater::ui_install(shared));
+                }
+            }
+            UpdateState::Latest { .. } | UpdateState::NotChecked | UpdateState::Checking => {
+                if ui
+                    .button("⟳ check now")
+                    .on_hover_text("Ask GitHub for a newer matrix-cam release right now.")
+                    .clicked()
+                {
+                    g.update = crate::updater::UpdateState::Checking;
+                    let shared = self.shared.clone();
+                    std::thread::spawn(move || {
+                        crate::updater::spawn_check_now(shared);
+                    });
+                }
+            }
+            _ => {}
+        }
+        ui.checkbox(&mut g.cfg_update_on_start, "Check for updates on start")
+            .on_hover_text("Look for a newer release each time matrix-cam starts (never auto-installs). Disable here or with --no-update-check.");
 
         // ===== TELEMETRY =====
         if self.show_stats {

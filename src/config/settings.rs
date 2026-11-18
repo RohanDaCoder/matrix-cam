@@ -243,4 +243,18 @@ impl Settings {
         let b = self.bg;
         (54 * b[0] as u32 + 183 * b[1] as u32 + 19 * b[2] as u32) >> 8 > 140
     }
+
+    /// 8-bit retro look, applied on top of the current settings: chunky
+    /// pixel blocks, halved detail, stronger CRT scan/static/glitch and
+    /// phosphor trails. Colors are kept, so a green "term" look stays green.
+    /// Used by `--retro`, the GUI *8-bit retro* button and the TUI row.
+    pub fn apply_retro(&mut self) {
+        self.style = Style::Cells;
+        self.cols = (self.cols / 2).max(56);
+        self.glow = (self.glow + 4).min(24);
+        self.scan = 35.max(self.scan);
+        self.noise = 18.max(self.noise);
+        self.glitch = 20.max(self.glitch);
+        self.trails = 25.max(self.trails);
+    }
 }

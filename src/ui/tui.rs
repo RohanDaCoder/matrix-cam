@@ -209,6 +209,24 @@ pub fn run(shared: Arc<Shared>, cfg_path: Option<String>) -> anyhow::Result<()> 
                     KeyCode::Char('m') => g.set.mirror = !g.set.mirror,
                     KeyCode::Char('i') => g.set.invert = !g.set.invert,
                     KeyCode::Char('f') => g.fps_limit.enabled = !g.fps_limit.enabled,
+                    KeyCode::Char('r') => {
+                        g.set.apply_retro();
+                        g.preset_name = "custom".into();
+                        force = true;
+                    }
+                    KeyCode::Char('u') => {
+                        g.update = crate::updater::UpdateState::Checking;
+                        let shared2 = shared.clone();
+                        drop(g);
+                        crate::updater::spawn_check_now(shared2);
+                        continue;
+                    }
+                    KeyCode::Char('U') => {
+                        let shared2 = shared.clone();
+                        drop(g);
+                        crate::updater::ui_install(shared2); // may restart the process
+                        continue;
+                    }
                     KeyCode::Char(d @ '1'..='5') => {
                         let name = PRESETS[(d as u8 - b'1') as usize];
                         let mirror = g.set.mirror;
@@ -262,7 +280,7 @@ pub fn run(shared: Arc<Shared>, cfg_path: Option<String>) -> anyhow::Result<()> 
         let pw = cols.saturating_sub(panel_w + 1);
         let ph = rows_n.saturating_sub(2);
 
-        let (view, set, eff, auto, stats, ro, status, paused, preset, fps_enabled, fps_val) = {
+        let (view, set, eff, auto, stats, ro, status, paused, preset, fps_enabled, fps_val, upd) = {
             let g = shared.inner.lock().unwrap();
             (
                 g.view.clone(),
@@ -276,6 +294,7 @@ pub fn run(shared: Arc<Shared>, cfg_path: Option<String>) -> anyhow::Result<()> 
                 g.preset_name.clone(),
                 g.fps_limit.enabled,
                 g.fps_limit.fps,
+                g.update.clone(),
             )
         };
 
@@ -348,6 +367,9 @@ pub fn run(shared: Arc<Shared>, cfg_path: Option<String>) -> anyhow::Result<()> 
                 state = format!("{}  retro {}fps", state, fps_val);
             }
             put(&mut out, &mut y, state)?;
+            if !matches!(upd, crate::updater::UpdateState::NotChecked) {
+                put(&mut out, &mut y, upd.label())?;
+            }
             let scroll = sel.saturating_sub((rows_n as usize).saturating_sub(10));
             for (i, row) in table.iter().enumerate().skip(scroll) {
                 if y >= rows_n - 1 {
@@ -377,7 +399,7 @@ pub fn run(shared: Arc<Shared>, cfg_path: Option<String>) -> anyhow::Result<()> 
             MoveTo(0, rows_n - 1),
             Print(format!(
                 "\x1b[0m{:<w$}",
-                "↑↓ select  ←→ adjust  1-5 presets  6-9 user  a auto  f retro-fps  p pause  Tab panel  w save  W new look  q quit",
+                "↑↓ select  ←→ adjust  1-5 presets  6-9 user  a auto  f retro-fps  r 8-bit look  u check-update  U install  p pause  Tab panel  w save  W new look  q quit",
                 w = cols as usize
             ))
         )?;

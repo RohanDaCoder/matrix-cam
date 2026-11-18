@@ -23,6 +23,14 @@ pub struct Args {
     pub config: Option<String>,
     pub reset: bool,
     pub list: bool,
+    /// Self-updater: install newest release and restart.
+    pub update: bool,
+    /// Self-updater: print whether an update exists, exit.
+    pub check_update: bool,
+    /// Self-updater: skip the on-start background update check.
+    pub no_update_check: bool,
+    /// 8-bit retro mode: apply the retro look + enable the FPS limiter.
+    pub retro: bool,
 }
 
 impl Default for Args {
@@ -43,6 +51,10 @@ impl Default for Args {
             config: None,
             reset: false,
             list: false,
+            update: false,
+            check_update: false,
+            no_update_check: false,
+            retro: false,
         }
     }
 }
@@ -65,6 +77,10 @@ USAGE  matrix-cam [OPTIONS]
   --config PATH     config file (default %APPDATA%\\matrix-cam\\config.json)
   --reset           ignore saved config
   --list            list cameras + backends and exit
+  --retro           8-bit retro mode: chunky look + FPS limiter (12 fps)
+  --check-update    show the newest GitHub release and exit
+  --update          install the newest release and restart
+  --no-update-check skip the on-start update check
 
 GUI  preview + full settings + auto panel + telemetry
 TUI  ↑↓ select · ←→ adjust · 1-5 presets · a auto · Tab panel · w save · q quit"
@@ -111,6 +127,10 @@ pub fn parse() -> Result<Args> {
             "--no-auto" => a.auto = Some(false),
             "--reset" => a.reset = true,
             "--list" => a.list = true,
+            "--retro" => a.retro = true,
+            "--update" => a.update = true,
+            "--check-update" => a.check_update = true,
+            "--no-update-check" => a.no_update_check = true,
             "-h" | "--help" => {
                 usage();
                 std::process::exit(0);

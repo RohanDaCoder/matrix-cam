@@ -22,6 +22,7 @@ mod pipeline;
 mod render;
 mod state;
 mod ui;
+mod updater;
 
 #[cfg(windows)]
 mod platform;
@@ -72,6 +73,16 @@ fn main() -> Result<()> {
     if args.list {
         platform::list_devices();
         return Ok(());
+    }
+
+    // Self-update handling: headless paths first, then the background check
+    // the GUI/TUI show in their panels.
+    if args.update {
+        updater::cleanup_stale();
+        updater::update_now(); // never returns
+    }
+    if args.check_update {
+        std::process::exit(updater::cli_check());
     }
 
     if let Some(b) = platform::windows_build() {

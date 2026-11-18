@@ -29,10 +29,17 @@ pub struct Config {
     pub fps_limit_enabled: bool,
     #[serde(default = "default_retro_fps")]
     pub fps_limit_fps: u32,
+    /// Self-updater: check GitHub for a newer release when the app starts.
+    #[serde(default = "default_true")]
+    pub update_on_start: bool,
 }
 
 fn default_retro_fps() -> u32 {
     12
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Config {
@@ -46,6 +53,7 @@ impl Default for Config {
             threads: 0,
             fps_limit_enabled: false,
             fps_limit_fps: default_retro_fps(),
+            update_on_start: true,
         }
     }
 }
