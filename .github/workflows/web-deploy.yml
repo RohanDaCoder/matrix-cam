@@ -48,6 +48,22 @@ jobs:
       - name: Build (release)
         run: trunk build --release
 
+      - name: Clean preload tags
+        # trunk emits <link rel="preload" ... integrity="..."> for the wasm;
+        # Chrome ignores SRI on wasm preloads and logs a console warning for
+        # every visitor (crbug.com/981419). The hash still ships on the
+        # module URL itself — drop the useless attribute.
+        run: |
+          python3 - <<'EOF'
+          import re
+          from pathlib import Path
+          p = Path("dist/index.html")
+          t = p.read_text()
+          t, n = re.subn(r'(<link[^>]*rel="(?:preload|modulepreload)"[^>]*?)\s+integrity="[^"]*"', r'\1', t)
+          p.write_text(t)
+          print(f"stripped integrity from {n} preload link(s)")
+          EOF
+
       - name: Smoke-check the artifact set
         run: |
           test -f dist/index.html

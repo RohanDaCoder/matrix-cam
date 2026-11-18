@@ -69,13 +69,7 @@ impl Style {
             Style::Cells => "Pixel blocks",
         }
     }
-    pub fn glyph_count(self) -> usize {
-        match self {
-            Style::Ascii => 11,
-            Style::Dots => 32,
-            Style::Cells => 16,
-        }
-    }
+
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
@@ -126,6 +120,21 @@ pub struct Settings {
     /// Character settings: reverse the glyph ramp (dark-on-light feel).
     #[serde(default)]
     pub reverse: bool,
+}
+
+impl Settings {
+    /// Number of selectable shades the CURRENT style renders with. For the
+    /// text style this is the length of the ACTIVE glyph table (3..11
+    /// depending on `GlyphSet`), not a constant — indexing the atlas with
+    /// a per-style constant was the "len is 5 but the index is 8" panic
+    /// (Ascii style + Minimal/Blocks character set).
+    pub fn glyph_count(&self) -> usize {
+        match self.style {
+            Style::Ascii => crate::render::font::glyph_table(self.glyphs).len(),
+            Style::Dots => 32,
+            Style::Cells => 16,
+        }
+    }
 }
 
 impl Default for Settings {

@@ -10,6 +10,10 @@ use matrix_core::state::{Inner, Shared, Status};
 use matrix_core::time::Instant;
 use std::sync::{Arc, Mutex};
 
+/// Tests that touch the process-global report store hold this guard for
+/// their whole body (parallel test threads otherwise race on it).
+static REPORT_LOCK: Mutex<()> = Mutex::new(());
+
 /// Deterministic camera: emits `n` distinct frames, then optionally dries up.
 struct FakeCam {
     frames_left: usize,
@@ -115,6 +119,7 @@ fn quit_request_stops_the_engine() {
 
 #[test]
 fn camera_lost_after_long_drought_captures_report() {
+    let _g = REPORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     // err_streak > 300 is the fatal path; camera-lost must surface BOTH in
     // status.error AND as a captured report (that is what the crash popup
     // shows). The capture fires once per streak, not every tick.
@@ -179,4 +184,47 @@ fn pipeline_renders_until_quit() {
         // frames rendered before quit: view published at least once
     });
     handle.join().expect("pipeline thread panicked");
+}
+
+
+/// A FrameSource that panics — the crash-report guarantee: tick_guarded
+/// catches it, captures a report, and neither the engine nor the caller
+/// unwinds.
+struct ExplodingCam;
+
+impl FrameSource for ExplodingCam {
+    fn next_frame(&mut self) -> Option<(Vec<u8>, usize, usize)> {
+        panic!("exploding camera (test)");
+    }
+}
+
+#[test]
+fn guarded_tick_catches_panic_and_captures_report() {
+    let _g = REPORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    matrix_core::report::clear();
+    let sh = shared(false);
+    let mut eng = Engine::new(64, 48, 1, false);
+    let mut cam = ExplodingCam;
+    let now = Instant::now();
+
+    // plain tick would panic straight through — guarded returns Err instead
+    let r = eng.tick_guarded(&sh, &mut cam, now);
+    let msg = r.expect_err("panic must surface as Err");
+    assert!(msg.contains("exploding camera"), "message preserved: {msg}");
+
+    // the report store has the full report (popup reads this)
+    let reps = matrix_core::report::reports_snapshot();
+    assert_eq!(reps.len(), 1, "exactly one report");
+    assert_eq!(reps[0].kind, matrix_core::report::Kind::Panic);
+    assert!(reps[0].message.contains("exploding camera"));
+    assert!(!reps[0].stack.is_empty(), "backtrace captured");
+    assert!(reps[0].origin.contains("guarded"), "origin marks the guarded tick");
+
+    // engine requested quit so the loop stops cleanly
+    assert!(sh.inner.lock().unwrap().quit, "quit requested after caught panic");
+
+    // and the engine is still usable (a later guarded tick just returns the quit)
+    let r2 = eng.tick_guarded(&sh, &mut cam, now);
+    assert_eq!(r2, Ok(false), "subsequent tick honors quit — no re-panic");
+    matrix_core::report::clear();
 }

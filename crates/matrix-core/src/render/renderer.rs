@@ -256,7 +256,7 @@ fn rows_job(gy0: usize, gy1: usize, pxh: usize, s: RowSlices<'_, '_>, p: &RowPar
     let dim = mix(p.set.bg, p.set.ink, 0.28);
     let glitchp = p.set.glitch as f32 * 0.0004;
     let mut rng = Rng(p.seed | 1);
-    let levels = p.set.style.glyph_count();
+    let levels = p.set.glyph_count();
 
     for gy in gy0..gy1 {
         let ly = gy - gy0;

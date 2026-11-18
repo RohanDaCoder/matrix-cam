@@ -104,7 +104,7 @@ impl Auto {
             self.seed(base);
         }
 
-        let levels = base.style.glyph_count();
+        let levels = base.glyph_count();
         let mut note = Vec::new();
         let mut black = 0u8;
         let mut white = 255u8;

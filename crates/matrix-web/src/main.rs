@@ -146,12 +146,19 @@ impl eframe::App for WebApp {
             self.started = true;
             self.camera.request(None);
         }
-        // engine tick: the web equivalent of the desktop pipeline loop
+        // engine tick: the web equivalent of the desktop pipeline loop.
+        // GUARDED: a panic inside the render work (the glyph-index crash
+        // class) must not unwind through eframe's repaint callback — that
+        // kills the whole rAF loop and the app freezes forever with no
+        // popup. Catch it, report it, keep the UI alive to show it.
         if self.started {
             self.camera.drive();
             let shared = self.gui.shared.clone();
             let cam = &mut self.camera;
-            self.engine.tick(&shared, cam, Instant::now());
+            if let Err(msg) = self.engine.tick_guarded(&shared, cam, Instant::now()) {
+                web_sys::console::error_1(&format!("engine tick panicked: {msg}").into());
+                self.started = false; // stop ticking; the popup shows the report
+            }
         }
         // delegate the whole UI to the shared front-end
         self.gui.update(ctx, _frame);
@@ -391,7 +398,12 @@ impl FrameSource for WebCamera {
                 let c = doc.create_element("canvas").unwrap().dyn_into::<web_sys::HtmlCanvasElement>().unwrap();
                 c.set_width(w);
                 c.set_height(h);
-                let ctx = c.get_context("2d").unwrap().unwrap().dyn_into::<web_sys::CanvasRenderingContext2d>().unwrap();
+                // willReadFrequently: this canvas exists for getImageData
+                // readback every frame — Chrome keeps it on a CPU-backed
+                // surface instead of warning on each readback.
+                let opts = js_sys::Object::new();
+                js_sys::Reflect::set(&opts, &wasm_bindgen::JsValue::from_str("willReadFrequently"), &wasm_bindgen::JsValue::from_bool(true)).expect("set willReadFrequently");
+                let ctx = c.get_context_with_context_options("2d", &opts).unwrap().unwrap().dyn_into::<web_sys::CanvasRenderingContext2d>().unwrap();
                 self.ctx = Some(ctx);
             }
             self.ctx.as_ref().unwrap()

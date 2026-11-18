@@ -90,8 +90,13 @@ pub fn run<C: Clock>(
             next_frame_at = now + frame_time;
         }
 
-        if !eng.tick(&shared, src.as_mut(), clock.now()) {
-            break;
+        // guarded: a panic in the render work is reported (crash popup)
+        // instead of tearing down the pipeline thread with an unwinding
+        // poison; the loop exits cleanly through quit.
+        match eng.tick_guarded(&shared, src.as_mut(), clock.now()) {
+            Ok(false) => break,
+            Ok(true) => {}
+            Err(_) => break, // panic captured + reported; stop the loop
         }
 
         // push the just-published frame into the virtual camera
