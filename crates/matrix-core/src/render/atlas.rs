@@ -40,7 +40,7 @@ pub fn blit(out: &mut [u8], w: usize, h: usize, ox: usize, oy: usize, m: &Mask, 
         }
         let b = (ox + x1 as usize).min(w);
         let row = &mut out[(y * w + a) * 3..(y * w + b) * 3];
-        for px in row.chunks_exact_mut(3) {
+        for px in row.as_chunks_mut::<3>().0 {
             px.copy_from_slice(&col);
         }
     }

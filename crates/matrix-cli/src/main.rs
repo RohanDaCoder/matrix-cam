@@ -5,21 +5,27 @@
 //! - `matrix-core`  — engine, renderer, adaptive auto, settings, state
 //! - `matrix-gui`  — the egui front-end (also used by the web build)
 //! - this crate    — CLI parsing, Windows camera plumbing (`platform`),
-//!                   the terminal UI, the self-updater
+//!   the terminal UI, the self-updater
 //!
-//! On non-Windows targets the camera stack is not reachable from `main`
-//! (see `platform` stub), which makes rustc flag it as dead code even though
-//! the Windows build uses all of it. Silence that case only.
-#![cfg_attr(not(windows), allow(dead_code, unused_imports))]
+//! On non-Windows targets `platform::start` refuses to run (cameras are a
+//! Windows feature), which makes `Runner::run` and everything only it calls
+//! (`tui::run`, the updater panel entry points) unreachable from this
+//! binary's call graph even though the Windows build exercises all of it.
+//! That genuinely-Windows-only reachability gap is the one place an allow
+//! is still warranted — applied per-module at their headers, not blanket
+//! on the crate.
 
 mod cli;
+#[cfg_attr(not(windows), allow(dead_code, unused_imports))]
 mod tui;
+#[cfg_attr(not(windows), allow(dead_code, unused_imports))]
 mod updater;
 
 #[cfg(windows)]
 mod platform;
 
 #[cfg(not(windows))]
+#[allow(dead_code)] // stub mirrors the Windows-only surface so the CLI parser compiles everywhere
 mod platform {
     //! Non-Windows stub: matrix-cam drives real cameras only on Windows 11.
     //! `cargo check` still works everywhere for the platform-neutral crates.
@@ -69,6 +75,35 @@ use anyhow::Result;
 use matrix_gui::gui::{Store, UpdaterHost};
 
 fn main() -> Result<()> {
+    // crash capture BEFORE anything can go wrong: panics anywhere (engine,
+    // renderer, GUI closures) get recorded with message + backtrace, so the
+    // GUI can show its "something went wrong" popup instead of the process
+    // dying silently. The default hook still prints to stderr.
+    {
+        let prior = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let msg = info
+                .payload()
+                .downcast_ref::<String>()
+                .cloned()
+                .or_else(|| info.payload().downcast_ref::<&str>().map(|s| s.to_string()))
+                .unwrap_or_else(|| "panic (no message)".into());
+            let location = info
+                .location()
+                .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+                .unwrap_or_default();
+            let stack = std::backtrace::Backtrace::force_capture().to_string();
+            matrix_core::report::capture(matrix_core::report::Kind::Panic, msg, stack, location);
+            prior(info);
+        }));
+        matrix_core::report::set_context(|c| {
+            c.host = "windows-desktop".into();
+            c.version = format!("v{}", matrix_core::update::CURRENT);
+            c.platform = format!("{} {} {}", std::env::consts::OS, std::env::consts::ARCH, platform::windows_build().map(|b| format!("win-build {b}")).unwrap_or_default());
+        });
+        matrix_core::report::log_line("boot: desktop app starting");
+    }
+
     let args = cli::parse()?;
 
     if args.list {

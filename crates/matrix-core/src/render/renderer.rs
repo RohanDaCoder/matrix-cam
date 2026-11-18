@@ -1,9 +1,10 @@
 //! The frame renderer: camera RGB in → effect frame out.
 
-use crate::config::{ColorMode, Settings, Style};
+use crate::config::{Settings, Style};
 use crate::render::atlas::{self, Atlas, Key};
 use crate::render::fx::{self, Rng};
 use crate::render::grid::Grid;
+use crate::render::CellCtx;
 use crate::render::tone;
 use crate::render::{cell_color, mix};
 use std::sync::Arc;
@@ -113,13 +114,13 @@ impl Renderer {
         let t = (s.trails as f32 / 100.0 * 0.94 * 256.0) as u32;
         if t > 0 {
             let inv = 256 - t;
-            for px in buf.chunks_exact_mut(3) {
+            for px in buf.as_chunks_mut::<3>().0 {
                 px[0] = ((px[0] as u32 * t + s.bg[0] as u32 * inv) >> 8) as u8;
                 px[1] = ((px[1] as u32 * t + s.bg[1] as u32 * inv) >> 8) as u8;
                 px[2] = ((px[2] as u32 * t + s.bg[2] as u32 * inv) >> 8) as u8;
             }
         } else {
-            for px in buf.chunks_exact_mut(3) {
+            for px in buf.as_chunks_mut::<3>().0 {
                 px.copy_from_slice(&s.bg);
             }
         }
@@ -137,7 +138,7 @@ impl Renderer {
         };
 
         let threads = self.threads.min(gh).max(1);
-        let rows_per = (gh + threads - 1) / threads;
+        let rows_per = gh.div_ceil(threads);
         let (w, h) = (self.w, self.h);
         let atlas_ref = self.atlas.as_ref().unwrap();
         let set = &self.set;
@@ -182,8 +183,9 @@ impl Renderer {
             for job in jobs {
                 let (gy0, gy1, px, o, rw, rd, rgb, ix, cl) = job;
                 rows_job(
-                    gy0, gy1, px, o, rw, rd, rgb, ix, cl, src, sw, crop, gw, cw, chh, w,
-                    atlas_ref, set, lut, serial,
+                    gy0, gy1, px,
+                    RowSlices { out: o, raw: rw, red: rd, rgb, idxs: ix, cols: cl },
+                    &RowParams { src, sw, crop, gw, cw, chh, w, atlas: atlas_ref, set, lut, seed: serial },
                 );
             }
             #[cfg(not(target_arch = "wasm32"))]
@@ -192,9 +194,13 @@ impl Renderer {
                     sc.spawn(move || {
                         let (gy0, gy1, px, o, rw, rd, rgb, ix, cl) = job;
                         rows_job(
-                            gy0, gy1, px, o, rw, rd, rgb, ix, cl, src, sw, crop, gw, cw, chh, w,
-                            atlas_ref, set, lut,
-                            serial ^ (k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                            gy0, gy1, px,
+                            RowSlices { out: o, raw: rw, red: rd, rgb, idxs: ix, cols: cl },
+                            &RowParams {
+                                src, sw, crop, gw, cw, chh, w,
+                                atlas: atlas_ref, set, lut,
+                                seed: serial ^ (k as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15),
+                            },
                         );
                     });
                 }
@@ -212,58 +218,64 @@ impl Renderer {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn rows_job(
-    gy0: usize,
-    gy1: usize,
-    pxh: usize,
-    out: &mut [u8],
-    raw: &mut [u8],
-    red: &mut [u8],
-    rgb: &mut [[u8; 3]],
-    idxs: &mut [u8],
-    cols: &mut [[u8; 3]],
-    src: &[u8],
+/// Per-render geometry + references, bundled so `rows_job` takes (job,
+/// params) instead of 20 positional arguments.
+struct RowParams<'a> {
+    src: &'a [u8],
     sw: usize,
     crop: (usize, usize, usize, usize),
     gw: usize,
     cw: usize,
     chh: usize,
     w: usize,
-    atlas: &Atlas,
-    set: &Settings,
-    lut: &[u8; 256],
+    atlas: &'a Atlas,
+    set: &'a Settings,
+    lut: &'a [u8; 256],
     seed: u64,
-) {
-    let (cropw, croph, cx0, cy0) = crop;
-    let gh = atlas.gh;
-    let mirror = set.mirror;
-    let inv = set.invert;
-    let sigcut = ((100 - set.threshold) as f32 * 1.1 + 12.0) as i32;
-    let heatcut = (set.threshold as f32 * 2.55) as u8;
-    let dim = mix(set.bg, set.ink, 0.28);
-    let glitchp = set.glitch as f32 * 0.0004;
-    let mut rng = Rng(seed | 1);
-    let levels = set.style.glyph_count();
+}
+
+/// The six per-job mutable slices, split out by the caller for each row
+/// band (out/raw/red/rgb/idxs/cols).
+struct RowSlices<'a, 'b> {
+    out: &'a mut [u8],
+    raw: &'b mut [u8],
+    red: &'b mut [u8],
+    rgb: &'b mut [[u8; 3]],
+    idxs: &'b mut [u8],
+    cols: &'b mut [[u8; 3]],
+}
+
+fn rows_job(gy0: usize, gy1: usize, pxh: usize, s: RowSlices<'_, '_>, p: &RowParams<'_>) {
+    let (cropw, croph, cx0, cy0) = p.crop;
+    let RowSlices { out, raw, red, rgb, idxs, cols } = s;
+    let gh = p.atlas.gh;
+    let mirror = p.set.mirror;
+    let inv = p.set.invert;
+    let sigcut = ((100 - p.set.threshold) as f32 * 1.1 + 12.0) as i32;
+    let heatcut = (p.set.threshold as f32 * 2.55) as u8;
+    let dim = mix(p.set.bg, p.set.ink, 0.28);
+    let glitchp = p.set.glitch as f32 * 0.0004;
+    let mut rng = Rng(p.seed | 1);
+    let levels = p.set.style.glyph_count();
 
     for gy in gy0..gy1 {
         let ly = gy - gy0;
-        let oy = ly * chh;
+        let oy = ly * p.chh;
         let sy0 = cy0 + gy * croph / gh;
         let sy1 = (cy0 + ((gy + 1) * croph / gh)).min(cy0 + croph).max(sy0 + 1);
-        for gx in 0..gw {
-            let ci = ly * gw + gx;
-            let sx0 = gx * cropw / gw;
-            let sx1 = ((gx + 1) * cropw / gw).min(cropw).max(sx0 + 1);
+        for gx in 0..p.gw {
+            let ci = ly * p.gw + gx;
+            let sx0 = gx * cropw / p.gw;
+            let sx1 = ((gx + 1) * cropw / p.gw).min(cropw).max(sx0 + 1);
             let (mut r, mut g, mut b, mut n) = (0u32, 0u32, 0u32, 0u32);
             for y in sy0..sy1 {
                 for x in sx0..sx1 {
                     let xx = if mirror { cropw - 1 - x } else { x };
-                    let i = (y * sw + cx0 + xx) * 3;
-                    if i + 2 < src.len() {
-                        r += src[i] as u32;
-                        g += src[i + 1] as u32;
-                        b += src[i + 2] as u32;
+                    let i = (y * p.sw + cx0 + xx) * 3;
+                    if i + 2 < p.src.len() {
+                        r += p.src[i] as u32;
+                        g += p.src[i + 1] as u32;
+                        b += p.src[i + 2] as u32;
                         n += 1;
                     }
                 }
@@ -279,19 +291,20 @@ fn rows_job(
             let cell_rgb = [cr, cg, cb];
             rgb[ci] = cell_rgb;
 
-            let lv = lut[lraw as usize];
+            let lv = p.lut[lraw as usize];
             let v = if inv { 255 - lv } else { lv };
 
             let mut col = cell_color(
-                set.mode,
-                set.ink,
-                set.bg,
-                set.accent,
-                toned_rgb(cell_rgb, lut, inv),
-                v,
-                heatcut,
-                sigcut,
-                rd,
+                p.set.mode,
+                CellCtx {
+                    ink: p.set.ink,
+                    accent: p.set.accent,
+                    luma: v,
+                    heatcut,
+                    sigcut,
+                    red_dom: rd,
+                },
+                toned_rgb(cell_rgb, p.lut, inv),
             );
             let mut idx = (v as usize * levels) / 256;
             if idx >= levels {
@@ -299,40 +312,40 @@ fn rows_job(
             }
             let corrupt = glitchp > 0.0 && rng.f() < glitchp;
             if corrupt {
-                col = set.accent;
-                if set.style == Style::Ascii {
+                col = p.set.accent;
+                if p.set.style == Style::Ascii {
                     idx = 1 + rng.below(levels - 1);
                 }
             }
             idxs[ci] = idx as u8;
             cols[ci] = col;
 
-            let ox = gx * cw;
-            match set.style {
+            let ox = gx * p.cw;
+            match p.set.style {
                 Style::Ascii => {
                     if idx == 0 {
                         continue;
                     }
-                    if set.glow > 0 {
-                        atlas::blit(out, w, pxh, ox + 1, oy + 1, &atlas.glyphs[idx], dim);
+                    if p.set.glow > 0 {
+                        atlas::blit(out, p.w, pxh, ox + 1, oy + 1, &p.atlas.glyphs[idx], dim);
                     }
-                    atlas::blit(out, w, pxh, ox, oy, &atlas.glyphs[idx], col);
+                    atlas::blit(out, p.w, pxh, ox, oy, &p.atlas.glyphs[idx], col);
                 }
                 Style::Dots => {
                     if v < 8 {
                         continue;
                     }
-                    if set.glow > 0 {
-                        atlas::blit(out, w, pxh, ox, oy, &atlas.halos[idx], dim);
+                    if p.set.glow > 0 {
+                        atlas::blit(out, p.w, pxh, ox, oy, &p.atlas.halos[idx], dim);
                     }
-                    atlas::blit(out, w, pxh, ox, oy, &atlas.dots[idx], col);
+                    atlas::blit(out, p.w, pxh, ox, oy, &p.atlas.dots[idx], col);
                 }
                 Style::Cells => {
                     if v < 8 {
                         continue;
                     }
                     let li = (idx * 16) / 32;
-                    atlas::blit(out, w, pxh, ox, oy, &atlas.cells[li.min(15)], col);
+                    atlas::blit(out, p.w, pxh, ox, oy, &p.atlas.cells[li.min(15)], col);
                 }
             }
         }
@@ -353,6 +366,3 @@ fn toned_rgb(rgb: [u8; 3], lut: &[u8; 256], inv: bool) -> [u8; 3] {
 // re-export for convenience
 pub use crate::render::tone::tone_from_levels;
 
-// silence unused warnings for ColorMode import used by cell_color docs
-#[allow(unused)]
-fn _color_mode_used(_: ColorMode) {}

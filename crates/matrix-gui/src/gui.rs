@@ -14,14 +14,15 @@
 //! literally the same code on both targets.
 
 use matrix_core::config::{AutoConfig, ColorMode, Config, GlyphSet, Settings, Style, UserPreset, PRESETS};
+use matrix_core::report;
 use matrix_core::state::{Inner, Shared};
 use matrix_core::time::Duration;
-use matrix_core::update::{UpdateState, CURRENT};
+use matrix_core::update::UpdateState;
 use crate::theme::{self, DIMC, OK, RED, WARN};
 use crate::widgets;
 use eframe::egui;
 use egui::{Color32, RichText};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// Where the settings JSON lives. Implemented by the desktop (file) and the
 /// web (localStorage) hosts.
@@ -60,6 +61,13 @@ pub struct GuiApp {
     /// toggles from the top bar instead of hogging ~370px of width.
     /// `None` until the first frame reveals the screen size.
     show_settings: Option<bool>,
+    /// Crash/error popup: opens itself the first time a report exists, and
+    /// stays open (it is a modal "something went wrong" dialog) until the
+    /// user dismisses it.
+    show_crash: bool,
+    /// Marks that the popup has auto-opened once; re-opens when NEW reports
+    /// arrive after the user dismissed the old ones.
+    crash_seen: bool,
 }
 
 impl GuiApp {
@@ -73,6 +81,8 @@ impl GuiApp {
             new_name: String::new(),
             show_stats: true,
             show_settings: None,
+            show_crash: false,
+            crash_seen: false,
         }
     }
 
@@ -137,6 +147,18 @@ impl eframe::App for GuiApp {
                 }
                 ui.separator();
                 ui.checkbox(&mut { self.show_stats }, "telemetry");
+                let n = report::count();
+                if n > 0 {
+                    ui.separator();
+                    if ui
+                        .colored_label(WARN, RichText::new(format!("⚠ {n}")).size(14.0))
+                        .on_hover_text("Something went wrong — click to see the report.")
+                        .interact(egui::Sense::click())
+                        .clicked()
+                    {
+                        self.show_crash = true;
+                    }
+                }
             });
             ui.horizontal_wrapped(|ui| {
                 let mut g = self.shared.inner.lock().unwrap();
@@ -173,6 +195,12 @@ impl eframe::App for GuiApp {
                 }
             });
         });
+
+        // ---------- crash / error popup ----------
+        // Auto-opens the moment a report exists (a panic hook captured
+        // something, the host reported an error, ...). All the logic lives
+        // in `crash_popup` so tests can drive it with a headless context.
+        self.crash_popup(ctx);
 
         // ---------- settings ----------
         // Clone the Arc so the MutexGuard does not borrow `self` while the
@@ -229,6 +257,83 @@ impl eframe::App for GuiApp {
 }
 
 impl GuiApp {
+    /// The crash/error popup. Drawn when reports exist (auto-opened) or the
+    /// user asked for it via the top-bar ⚠ indicator. `true` when it was
+    /// drawn this frame — tests assert on that.
+    pub fn crash_popup(&mut self, ctx: &egui::Context) -> bool {
+        if report::count() > 0 {
+            if !self.show_crash && !self.crash_seen {
+                self.show_crash = true;
+            }
+            self.crash_seen = true;
+        } else if self.crash_seen {
+            // reports vanished without the popup's own "clear all" (tests,
+            // hosts resetting state): close instead of showing an empty shell
+            self.crash_seen = false;
+            self.show_crash = false;
+        }
+        if !self.show_crash {
+            return false;
+        }
+        let n = report::count();
+        let mut dismiss = false;
+        let mut clear_all = false;
+        let mut copied = false;
+        egui::Window::new(format!("⚠ something went wrong ({n})"))
+            .open(&mut self.show_crash)
+            .collapsible(false)
+            .resizable(true)
+            .default_width(560.0)
+            .default_height(420.0)
+            .show(ctx, |ui| {
+                ui.colored_label(WARN, RichText::new("matrix-cam captured an error. The text below has everything needed to fix it — copy it into a GitHub issue.").size(12.0));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.button("⧉ copy report").clicked() {
+                        let text = report::full_text();
+                        ui.ctx().copy_text(text);
+                        copied = true;
+                    }
+                    if ui.button("dismiss").clicked() {
+                        dismiss = true;
+                    }
+                    if ui.button("clear all").clicked() {
+                        clear_all = true;
+                    }
+                });
+                if copied {
+                    ui.colored_label(OK, "copied to clipboard ✓");
+                }
+                ui.add_space(4.0);
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                    let reps = report::reports_snapshot();
+                    let log = report::log_snapshot();
+                    for (i, r) in reps.iter().enumerate() {
+                        ui.colored_label(
+                            if r.kind == matrix_core::report::Kind::Warning { WARN } else { RED },
+                            RichText::new(format!("{} {}", r.kind.label().to_uppercase(), i + 1)).size(13.0),
+                        );
+                        ui.monospace(r.to_text(&log));
+                        ui.add_space(6.0);
+                    }
+                    if !log.is_empty() {
+                        ui.colored_label(RED, RichText::new("RECENT LOG").size(13.0));
+                        ui.monospace(log.join("\n"));
+                    }
+                });
+            });
+        let _ = (copied, dismiss, clear_all);
+        if dismiss {
+            self.show_crash = false;
+        }
+        if clear_all {
+            report::clear();
+            self.show_crash = false;
+            self.crash_seen = false;
+        }
+        true
+    }
+
     /// The redesigned settings panel (renamed + grouped + tooltips).
     fn settings_panel(&mut self, ui: &mut egui::Ui, g: &mut Inner) {
         let auto_on = g.auto.enabled;
@@ -528,18 +633,17 @@ impl GuiApp {
                         std::thread::spawn(move || host.install(shared));
                     }
                 }
-                UpdateState::Latest { .. } | UpdateState::NotChecked | UpdateState::Checking => {
+                UpdateState::Latest { .. } | UpdateState::NotChecked | UpdateState::Checking
                     if ui
                         .button("⟳ check now")
                         .on_hover_text("Ask GitHub for a newer matrix-cam release right now.")
                         .clicked()
-                    {
+                    => {
                         g.update = UpdateState::Checking;
                         let shared = self.shared.clone();
                         let host = self.updater.clone();
                         std::thread::spawn(move || host.check_now(shared));
                     }
-                }
                 _ => {}
             }
             ui.checkbox(&mut g.cfg_update_on_start, "Check for updates on start")
@@ -565,8 +669,3 @@ impl GuiApp {
     }
 }
 
-#[allow(dead_code)]
-fn _mutex_import(_: &Mutex<Inner>) {}
-
-#[allow(unused_imports)]
-use CURRENT as _CURRENT;

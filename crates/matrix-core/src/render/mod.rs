@@ -14,28 +14,32 @@ pub use tone::tone_from_levels;
 
 use crate::config::ColorMode;
 
+/// Everything `cell_color` needs besides the settings palette. Bundling
+/// these keeps the signature small (they travel together everywhere).
+#[derive(Clone, Copy)]
+pub struct CellCtx {
+    pub ink: [u8; 3],
+    pub accent: [u8; 3],
+    pub luma: u8,
+    /// Bright-above-this cells take the accent color (Heat mode).
+    pub heatcut: u8,
+    /// Red-dominance cutoff for Signal mode.
+    pub sigcut: i32,
+    /// How red-dominant this cell is (0-255).
+    pub red_dom: u8,
+}
+
 /// Map a cell colour per the active color mode (shared by renderer rows and TUI).
-#[allow(clippy::too_many_arguments)]
-pub fn cell_color(
-    mode: ColorMode,
-    ink: [u8; 3],
-    _bg: [u8; 3],
-    accent: [u8; 3],
-    rgb: [u8; 3],
-    luma: u8,
-    heatcut: u8,
-    sigcut: i32,
-    red_dom: u8,
-) -> [u8; 3] {
+pub fn cell_color(mode: ColorMode, ctx: CellCtx, rgb: [u8; 3]) -> [u8; 3] {
     match mode {
-        ColorMode::Mono => ink,
+        ColorMode::Mono => ctx.ink,
         ColorMode::Signal => {
-            if red_dom as i32 > sigcut { accent } else { ink }
+            if ctx.red_dom as i32 > ctx.sigcut { ctx.accent } else { ctx.ink }
         }
         ColorMode::Heat => {
-            if luma > heatcut { accent } else { ink }
+            if ctx.luma > ctx.heatcut { ctx.accent } else { ctx.ink }
         }
-        ColorMode::Duo => mix(ink, accent, luma as f32 / 255.0),
+        ColorMode::Duo => mix(ctx.ink, ctx.accent, ctx.luma as f32 / 255.0),
         ColorMode::Color => rgb,
     }
 }

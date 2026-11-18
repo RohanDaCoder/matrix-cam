@@ -135,8 +135,8 @@ pub fn download(url: &str, dest: &Path, mut on_progress: impl FnMut(u32)) -> Res
         }
         file.write_all(&buf[..n])?;
         done += n as u64;
-        if total > 0 {
-            on_progress(((done.saturating_mul(100)) / total).min(100) as u32);
+        if let Some(pct) = u64::checked_div(done.saturating_mul(100), total) {
+            on_progress(pct.min(100) as u32);
         }
     }
     file.flush().context("finishing download")?;

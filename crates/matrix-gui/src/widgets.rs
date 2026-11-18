@@ -1,7 +1,7 @@
 //! Reusable setting widgets for the GUI.
 
 use crate::theme::RED;
-use egui::{Checkbox, Color32, Slider, Ui};
+use egui::{Checkbox, Slider, Ui};
 
 /// Slider that shows the live auto value (read-only, red `A` marker) when the
 /// adaptive controller owns the field, and the user's base value otherwise.
@@ -84,17 +84,21 @@ pub fn checkbox_auto(ui: &mut Ui, label: &str, tooltip: &str, base: &mut bool, e
     ui.response().on_hover_text(tooltip.to_string());
 }
 
-/// Color swatch + per-channel sliders with a small preview.
+/// Proper color picker: label + egui's `color_edit_button_rgb`, which opens
+/// the full picker popup (SV square, hue slider, RGB/HSL/hex fields, and on
+/// some platforms an eyedropper). Much better than three raw 0-255 sliders.
 pub fn color_row(ui: &mut Ui, label: &str, tooltip: &str, c: &mut [u8; 3]) {
+    // egui's picker speaks f32 0-1 channels; convert at the boundary.
+    let mut rgbf = [c[0] as f32 / 255.0, c[1] as f32 / 255.0, c[2] as f32 / 255.0];
     ui.horizontal(|ui| {
         ui.label(format!("{label:<7}"));
-        ui.colored_label(Color32::from_rgb(c[0], c[1], c[2]), "███");
-        ui.add(Slider::new(&mut c[0], 0..=255).text("r"));
-    });
-    ui.horizontal(|ui| {
-        ui.label("       ");
-        ui.add(Slider::new(&mut c[1], 0..=255).text("g"));
-        ui.add(Slider::new(&mut c[2], 0..=255).text("b"));
+        ui.color_edit_button_rgb(&mut rgbf)
+            .on_hover_text(tooltip.to_string());
+        *c = [
+            (rgbf[0] * 255.0).round().clamp(0.0, 255.0) as u8,
+            (rgbf[1] * 255.0).round().clamp(0.0, 255.0) as u8,
+            (rgbf[2] * 255.0).round().clamp(0.0, 255.0) as u8,
+        ];
     });
     ui.response().on_hover_text(tooltip.to_string());
 }

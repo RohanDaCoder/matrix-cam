@@ -96,10 +96,7 @@ impl Analyzer {
         self.prev.clear();
         self.prev.extend_from_slice(&g.raw);
 
-        let mut red = 0u64;
-        for i in 21..256 {
-            red += self.red_hist[i] as u64;
-        }
+        let red: u64 = self.red_hist[21..].iter().map(|&v| v as u64).sum();
 
         let mut hist = [0u32; 64];
         for i in 0..256 {
@@ -169,5 +166,11 @@ impl Analyzer {
             tot += self.hist[i] as u64;
         }
         if tot == 0 { 0.0 } else { on as f32 / tot as f32 }
+    }
+}
+
+impl Default for Analyzer {
+    fn default() -> Self {
+        Self::new()
     }
 }

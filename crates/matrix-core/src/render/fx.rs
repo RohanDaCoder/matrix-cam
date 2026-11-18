@@ -14,7 +14,7 @@ impl Rng {
             .as_nanos() as u64;
         Rng(n | 1)
     }
-    pub fn next(&mut self) -> u64 {
+    pub fn next_u64(&mut self) -> u64 {
         let mut x = self.0;
         x ^= x >> 12;
         x ^= x << 25;
@@ -23,10 +23,16 @@ impl Rng {
         x.wrapping_mul(0x2545_F491_4F6C_DD1D)
     }
     pub fn f(&mut self) -> f32 {
-        (self.next() >> 40) as f32 / 16_777_216.0
+        (self.next_u64() >> 40) as f32 / 16_777_216.0
     }
     pub fn below(&mut self, n: usize) -> usize {
-        if n == 0 { 0 } else { (self.next() % n as u64) as usize }
+        if n == 0 { 0 } else { (self.next_u64() % n as u64) as usize }
+    }
+}
+
+impl Default for Rng {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -63,7 +69,7 @@ pub fn apply(
         if rng.f() < 0.4 {
             let y = rng.below(h);
             let row = &mut buf[y * w * 3..(y + 1) * w * 3];
-            for px in row.chunks_exact_mut(3) {
+            for px in row.as_chunks_mut::<3>().0 {
                 px[0] = ((px[0] as u16 + accent[0] as u16) / 2) as u8;
                 px[1] = ((px[1] as u16 + accent[1] as u16) / 2) as u8;
                 px[2] = ((px[2] as u16 + accent[2] as u16) / 2) as u8;

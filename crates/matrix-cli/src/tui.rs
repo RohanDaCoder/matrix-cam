@@ -127,8 +127,8 @@ fn hex(c: [u8; 3]) -> String {
     format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])
 }
 fn tint(c: &mut [u8; 3], d: i32) {
-    for k in 0..3 {
-        c[k] = clampi(c[k] as i32 + d * 8, 0, 255) as u8;
+    for v in c.iter_mut() {
+        *v = clampi(*v as i32 + d * 8, 0, 255) as u8;
     }
 }
 
@@ -422,5 +422,3 @@ fn fps_mut(inner: &mut Inner) -> FpsLimitMut<'_> {
     FpsLimitMut { enabled: &mut inner.fps_limit.enabled, fps: &mut inner.fps_limit.fps }
 }
 
-#[allow(dead_code)]
-fn _imports(_: &Mutex<Inner>, _: &Arc<Shared>) {}

@@ -226,10 +226,12 @@ pub fn start(
         shared.clone(),
         Box::new(CamSource { cam, buf: Vec::new() }),
         Box::new(VCamSink { vcam }),
-        args.width,
-        args.height,
-        threads,
-        want_grid,
+        matrix_core::pipeline::PipelineSpec {
+            w: args.width,
+            h: args.height,
+            threads,
+            want_grid,
+        },
     );
 
     let runner = Runner { shared, cfg, cfg_path: args.config.clone(), mode: args.mode, threads };

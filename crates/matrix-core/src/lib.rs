@@ -12,6 +12,7 @@ pub mod config;
 pub mod engine;
 pub mod pipeline;
 pub mod render;
+pub mod report;
 pub mod state;
 pub mod time;
 pub mod update;

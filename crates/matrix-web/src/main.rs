@@ -32,6 +32,7 @@
 use matrix_core::config::{Config, Settings};
 use matrix_core::engine::Engine;
 use matrix_core::pipeline::FrameSource;
+use matrix_core::report;
 use matrix_core::state::{FpsLimit, Inner, Shared, Status};
 use matrix_core::time::Instant;
 use matrix_gui::gui::{GuiApp, Store, UpdaterHost};
@@ -47,6 +48,24 @@ fn main() {
     console_error_panic_hook::set_once();
     let _ = log::set_logger(&WasmLogger);
     log::set_max_level(log::LevelFilter::Warn);
+
+    // crash capture: the default panic hook prints to console only — chain a
+    // hook that ALSO records the panic (message + backtrace) so the GUI can
+    // show its "something went wrong" popup with everything needed to fix
+    // the bug, instead of a silently frozen canvas.
+    install_panic_capture();
+    // JS-side errors (exceptions in event handlers, promise rejections) come
+    // through window.onerror / onunhandledrejection; the wasm module cannot
+    // see them otherwise.
+    install_js_error_capture();
+    // report context: everything a fix needs to know about the environment
+    report::set_context(|c| {
+        c.host = "web".into();
+        c.version = format!("v{}", matrix_core::update::CURRENT);
+        c.platform = platform_line();
+        let _ = c;
+    });
+    report::log_line("boot: wasm module starting");
 
     // state: same `Shared`/`Inner` model as the desktop (built once, shared
     // with WebApp through the OnceLock)
@@ -176,6 +195,13 @@ impl WebCamera {
         wasm_bindgen_futures::spawn_local(async move {
             match get_user_media(facing.as_deref()).await {
                 Ok(stream) => {
+                    let track0 = stream.get_tracks().get(0);
+                    let label = js_sys::Reflect::get(&track0, &wasm_bindgen::JsValue::from_str("label"))
+                        .ok()
+                        .and_then(|l| l.as_string())
+                        .unwrap_or_default();
+                    matrix_core::report::set_context(|c| c.camera = label.clone());
+                    matrix_core::report::log_line(format!("camera opened: {}", if label.is_empty() { "(unknown device)" } else { &label }));
                     v.set_src_object(Some(&stream));
                     // autoplay muted — the user already gestured; if Android
                     // still rejects it, `drive()` re-issues play() on the
@@ -370,7 +396,7 @@ impl FrameSource for WebCamera {
             }
             self.ctx.as_ref().unwrap()
         };
-        ctx.draw_image_with_html_video_element(&v, 0.0, 0.0).ok()?;
+        ctx.draw_image_with_html_video_element(v, 0.0, 0.0).ok()?;
         // getImageData → RGBA; engine wants RGB
         let img = ctx.get_image_data(0.0, 0.0, w as f64, h as f64).ok()?;
         let data = img.data();
@@ -378,7 +404,7 @@ impl FrameSource for WebCamera {
         self.buf.clear();
         let raw = data.to_vec();
         self.buf.reserve(n * 3);
-        for px in raw.chunks_exact(4) {
+        for px in raw.as_chunks::<4>().0 {
             self.buf.push(px[0]);
             self.buf.push(px[1]);
             self.buf.push(px[2]);
@@ -429,6 +455,83 @@ impl UpdaterHost for WebUpdater {
 }
 
 // ---------------------------------------------------------------------------
+// crash / error capture
+// ---------------------------------------------------------------------------
+
+/// Platform description for the report context: user agent, language and
+/// viewport — the bits that matter when reproducing a mobile bug.
+fn platform_line() -> String {
+    let ua = web_sys::window()
+        .map(|w| w.navigator().user_agent().unwrap_or_default())
+        .unwrap_or_default();
+    let lang = web_sys::window().map(|w| w.navigator().language().unwrap_or_default()).unwrap_or_default();
+    let vp = web_sys::window()
+        .map(|w| {
+            let iw = w.inner_width().map(|v| v.as_f64().unwrap_or(0.0) as u32).unwrap_or(0);
+            let ih = w.inner_height().map(|v| v.as_f64().unwrap_or(0.0) as u32).unwrap_or(0);
+            format!("{iw}x{ih}")
+        })
+        .unwrap_or_default();
+    format!("{ua} / {lang} / viewport {vp}")
+}
+
+/// Chain a panic hook onto the default one: the default still logs to the
+/// console (via console_error_panic_hook), this one records the panic into
+/// the shared report store so the egui popup can show it. Runs on the SAME
+/// thread egui repaints on, so the popup appears without any cross-thread
+/// trickery.
+fn install_panic_capture() {
+    let prior = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let msg = info
+            .payload()
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| info.payload().downcast_ref::<&str>().map(|s| s.to_string()))
+            .unwrap_or_else(|| "panic (no message)".into());
+        let location = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_default();
+        let stack = std::backtrace::Backtrace::force_capture().to_string();
+        report::capture(report::Kind::Panic, msg, stack, location);
+        prior(info);
+    }));
+}
+
+/// `window.onerror` + `onunhandledrejection`: JS exceptions this module
+/// cannot otherwise see. Registered as global closures; kept alive in a
+/// leaked Vec so they live as long as the page (the app does too).
+fn install_js_error_capture() {
+    let window = match web_sys::window() {
+        Some(w) => w,
+        None => return,
+    };
+    // window.onerror(message, source, lineno, colno, error)
+    let cb = Closure::<dyn FnMut(JsValue, JsValue, i32, i32, JsValue)>::new(
+        |msg: JsValue, source: JsValue, line: i32, col: i32, _err: JsValue| {
+            let msg = msg.as_string().unwrap_or_else(|| "JS error".into());
+            let origin = source
+                .as_string()
+                .map(|s| format!("{}:{}:{}", s, line, col))
+                .unwrap_or_else(|| format!("js:{}:{}", line, col));
+            report::capture(report::Kind::Error, msg, String::new(), origin);
+        },
+    );
+    let _ = js_sys::Reflect::set(&window, &JsValue::from_str("onerror"), cb.as_ref());
+    // window.onunhandledrejection(event.reason)
+    let rj = Closure::<dyn FnMut(JsValue)>::new(|ev| {
+        let reason = js_sys::Reflect::get(&ev, &JsValue::from_str("reason")).unwrap_or(JsValue::NULL);
+        let stack = js_sys::Reflect::get(&reason, &JsValue::from_str("stack"))
+            .ok()
+            .and_then(|s| s.as_string())
+            .unwrap_or_default();
+        let msg = reason.as_string().unwrap_or_else(|| format!("{:?}", reason));
+        report::capture(report::Kind::Error, msg, stack, "unhandledrejection");
+    });
+    let _ = js_sys::Reflect::set(&window, &JsValue::from_str("onunhandledrejection"), rj.as_ref());
+    // keep the closures alive for the lifetime of the page
+    std::mem::forget((cb, rj));
+}
+
+// ---------------------------------------------------------------------------
 // tiny console logger
 // ---------------------------------------------------------------------------
 
@@ -440,7 +543,13 @@ impl log::Log for WasmLogger {
     }
     fn log(&self, rec: &log::Record) {
         if self.enabled(rec.metadata()) {
-            web_sys::console::warn_1(&format!("{}: {}", rec.level(), rec.args()).into());
+            let line = format!("[{}] {}", rec.level(), rec.args());
+            web_sys::console::warn_1(&line.clone().into());
+            // warnings land in the crash-report log ring: they usually
+            // explain a later failure ("getUserMedia failed: ...").
+            if rec.level() == log::Level::Warn {
+                matrix_core::report::log_line(line);
+            }
         }
     }
     fn flush(&self) {}

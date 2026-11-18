@@ -219,3 +219,9 @@ impl Auto {
         )
     }
 }
+
+impl Default for Auto {
+    fn default() -> Self {
+        Self::new()
+    }
+}

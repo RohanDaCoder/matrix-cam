@@ -9,9 +9,9 @@ use crate::auto::controller::Auto;
 use crate::config::Settings;
 use crate::pipeline::FrameSource;
 use crate::render::Renderer;
-use crate::state::{Inner, Shared, View};
+use crate::state::{Shared, View};
 use crate::time::Instant;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 /// One step of the effect chain. Returns `false` when the app asked to quit
 /// (`Inner::quit`) — the caller decides what that means (thread exit,
@@ -109,11 +109,19 @@ impl Engine {
         // treats it as fatal (the web camera can recover after a tab
         // refocus, so `tick` keeps running).
         if self.err_streak > 300 {
+            // capture once per streak (300 -> 301 transitions), so the
+            // crash popup has the report but the log ring isn't flooded
+            if self.err_streak == 301 {
+                let backend = shared.inner.lock().map(|g| g.status.cam.clone()).unwrap_or_default();
+                crate::report::capture(
+                    crate::report::Kind::Error,
+                    "camera lost: the capture device stopped delivering frames",
+                    format!("err_streak = {} consecutive failed next_frame() calls", self.err_streak),
+                    format!("engine tick / source: {backend}"),
+                );
+            }
             shared.inner.lock().unwrap().status.error = "camera lost".into();
         }
         true
     }
 }
-
-#[allow(dead_code)]
-fn _mutex_import(_: &Mutex<Inner>) {}

@@ -1,4 +1,4 @@
-# matrix-cam 2.3.1 — Windows 11 + Web
+# matrix-cam 2.4 — Windows 11 + Web
 
 Webcam → dot-matrix / character glitch effect → a real camera device. GUI **and** TUI,
 live preview, plain-language settings, character-set options, a retro FPS limiter,
@@ -78,6 +78,14 @@ once per repaint instead of a worker thread.
   always current.
 - **Run locally:** `trunk serve` then open http://localhost:8080 (camera needs
   localhost/HTTPS).
+- **Crash reports:** anything that goes wrong — a Rust panic, a JS error,
+  a rejected promise, a camera that dies mid-stream — is captured with its
+  message, stack trace, platform (user agent / OS build), camera name and a
+  rolling log of recent warnings. A popup shows the full report with a
+  copy-to-clipboard button, so every bug report pasted into an issue has
+  everything needed to fix it.
+- **Color picker:** the COLORS section uses a proper picker (hue/saturation
+  square, RGB and hex fields) instead of three raw RGB sliders.
 - **Android / iOS:** tap the page once to grant camera access — the preview
   starts automatically once the camera delivers frames. Phones start with
   the settings panel collapsed (⚙ settings shows it); the preview owns the

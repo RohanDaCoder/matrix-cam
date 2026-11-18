@@ -41,3 +41,9 @@ impl Grid {
         }
     }
 }
+
+impl Default for Grid {
+    fn default() -> Self {
+        Self::new()
+    }
+}

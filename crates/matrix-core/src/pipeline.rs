@@ -37,6 +37,16 @@ impl Clock for SystemClock {
     }
 }
 
+/// Pipeline shape: output size, worker threads, whether to keep the cell
+/// grid (TUI reuses it) — the parts that travel together into `run`.
+#[derive(Clone, Copy)]
+pub struct PipelineSpec {
+    pub w: u32,
+    pub h: u32,
+    pub threads: usize,
+    pub want_grid: bool,
+}
+
 /// Run the pipeline until `Inner::quit` is set (or the sink dies). `C: Clock`
 /// is `SystemClock` in production; tests can inject a fake clock. The actual
 /// per-frame work is `engine::Engine::tick` — the same code the web build runs.
@@ -44,12 +54,10 @@ pub fn run<C: Clock>(
     shared: Arc<Shared>,
     mut src: Box<dyn FrameSource + Send>,
     mut sink: Box<dyn FrameSink + Send>,
-    w: u32,
-    h: u32,
-    threads: usize,
-    want_grid: bool,
+    spec: PipelineSpec,
     clock: C,
 ) {
+    let PipelineSpec { w, h, threads, want_grid } = spec;
     let mut eng = Engine::new(w, h, threads, want_grid);
     let mut next_frame_at = clock.now();
     let mut limited = false;
@@ -107,13 +115,10 @@ pub fn spawn(
     shared: Arc<Shared>,
     src: Box<dyn FrameSource + Send>,
     sink: Box<dyn FrameSink + Send>,
-    w: u32,
-    h: u32,
-    threads: usize,
-    want_grid: bool,
+    spec: PipelineSpec,
 ) -> std::thread::JoinHandle<()> {
     std::thread::Builder::new()
         .name("pipeline".into())
-        .spawn(move || run(shared, src, sink, w, h, threads, want_grid, SystemClock))
+        .spawn(move || run(shared, src, sink, spec, SystemClock))
         .expect("spawn pipeline thread")
 }
