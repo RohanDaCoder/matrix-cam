@@ -1390,7 +1390,7 @@ dependencies = [
 
 [[package]]
 name = "matrix-cli"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "crossterm",
@@ -1408,7 +1408,7 @@ dependencies = [
 
 [[package]]
 name = "matrix-core"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "semver",
@@ -1419,7 +1419,7 @@ dependencies = [
 
 [[package]]
 name = "matrix-gui"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "eframe",
  "egui",
@@ -1428,12 +1428,13 @@ dependencies = [
 
 [[package]]
 name = "matrix-web"
-version = "2.3.0"
+version = "2.3.1"
 dependencies = [
  "anyhow",
  "console_error_panic_hook",
  "eframe",
  "egui",
+ "js-sys",
  "log",
  "matrix-core",
  "matrix-gui",

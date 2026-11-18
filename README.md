@@ -1,4 +1,4 @@
-# matrix-cam 2.3 — Windows 11 + Web
+# matrix-cam 2.3.1 — Windows 11 + Web
 
 Webcam → dot-matrix / character glitch effect → a real camera device. GUI **and** TUI,
 live preview, plain-language settings, character-set options, a retro FPS limiter,
@@ -78,6 +78,11 @@ once per repaint instead of a worker thread.
   always current.
 - **Run locally:** `trunk serve` then open http://localhost:8080 (camera needs
   localhost/HTTPS).
+- **Android / iOS:** tap the page once to grant camera access — the preview
+  starts automatically once the camera delivers frames. Phones start with
+  the settings panel collapsed (⚙ settings shows it); the preview owns the
+  full screen. If the camera is denied, the top bar shows the reason and a
+  reload restarts the flow.
 
 ## Settings (renamed)
 Old niche names → plain names:

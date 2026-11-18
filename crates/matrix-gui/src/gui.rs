@@ -56,11 +56,24 @@ pub struct GuiApp {
     tex_serial: u64,
     new_name: String,
     show_stats: bool,
+    /// Narrow screens (phones): the settings panel starts collapsed and
+    /// toggles from the top bar instead of hogging ~370px of width.
+    /// `None` until the first frame reveals the screen size.
+    show_settings: Option<bool>,
 }
 
 impl GuiApp {
     pub fn new(shared: Arc<Shared>, store: Arc<dyn Store>, updater: Arc<dyn UpdaterHost>) -> Self {
-        GuiApp { shared, store, updater, tex: None, tex_serial: 0, new_name: String::new(), show_stats: true }
+        GuiApp {
+            shared,
+            store,
+            updater,
+            tex: None,
+            tex_serial: 0,
+            new_name: String::new(),
+            show_stats: true,
+            show_settings: None,
+        }
     }
 
     fn save(&self) {
@@ -95,6 +108,13 @@ impl eframe::App for GuiApp {
         };
         ctx.request_repaint_after(Duration::from_millis(repaint_ms));
 
+        // Decide the settings-panel default once, from the actual screen:
+        // collapsed on narrow (phone) screens, open on desktop.
+        if self.show_settings.is_none() {
+            let narrow = ctx.screen_rect().width() < 700.0;
+            self.show_settings = Some(!narrow);
+        }
+
         // ---------- top bar ----------
         egui::TopBottomPanel::top("top").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -118,10 +138,20 @@ impl eframe::App for GuiApp {
                 ui.separator();
                 ui.checkbox(&mut { self.show_stats }, "telemetry");
             });
-            ui.horizontal(|ui| {
+            ui.horizontal_wrapped(|ui| {
                 let mut g = self.shared.inner.lock().unwrap();
                 if ui.button(if g.paused { "▶ resume" } else { "❚❚ pause" }).clicked() {
                     g.paused = !g.paused;
+                }
+                // settings toggle (always available; its main job is phones,
+                // where the side panel would swallow the preview)
+                let label = if self.show_settings == Some(true) { "⚙ hide settings" } else { "⚙ settings" };
+                if ui
+                    .button(label)
+                    .on_hover_text("Show or hide the settings panel")
+                    .clicked()
+                {
+                    self.show_settings = Some(self.show_settings != Some(true));
                 }
                 if ui.button("💾 save").clicked() {
                     let mut c = self.store.load();
@@ -148,15 +178,17 @@ impl eframe::App for GuiApp {
         // Clone the Arc so the MutexGuard does not borrow `self` while the
         // panel builder needs `&mut self` for the preset-name text box.
         let shared = self.shared.clone();
-        egui::SidePanel::right("settings")
-            .resizable(true)
-            .default_width(370.0)
-            .show(ctx, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    let mut g = shared.inner.lock().unwrap();
-                    self.settings_panel(ui, &mut g);
+        if self.show_settings == Some(true) {
+            egui::SidePanel::right("settings")
+                .resizable(true)
+                .default_width(370.0)
+                .show(ctx, |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        let mut g = shared.inner.lock().unwrap();
+                        self.settings_panel(ui, &mut g);
+                    });
                 });
-            });
+        }
 
         // ---------- preview ----------
         egui::CentralPanel::default().show(ctx, |ui| {

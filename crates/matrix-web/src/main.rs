@@ -3,8 +3,8 @@
 //! wasm and driving the browser's camera.
 //!
 //! Differences from the desktop host, all isolated here:
-//! - camera: `navigator.mediaDevices.getUserMedia` + a hidden `<video>` +
-//!   a 2D canvas that yields RGB frames to `FrameSource`
+//! - camera: `navigator.mediaDevices.getUserMedia` + an off-screen
+//!   `<video>` + a 2D canvas that yields RGB frames to `FrameSource`
 //! - persistence: `localStorage["matrix-cam-config"]` instead of
 //!   `%APPDATA%\matrix-cam\config.json`
 //! - updater: no-op host — the site is re-deployed on release, so the web
@@ -15,6 +15,19 @@
 //! Everything else — the settings panel, presets, auto adjust, retro look,
 //! retro FPS limiter, telemetry — is the shared `matrix-gui` + `matrix-core`
 //! code the Windows build runs.
+//!
+//! Mobile notes (the black-preview class of bugs on Android):
+//! - the `<video>` must stay *attached and visible*, just 1px off the
+//!   corner: `display:none` (and most `visibility` tricks) make Android
+//!   Chrome stop decoding frames, so `videoWidth` never becomes nonzero;
+//! - autoplay can be rejected on Android even after the permission grant,
+//!   so `play()` is retried and also re-driven when a frame is expected
+//!   but the element is still paused;
+//! - `paused` starts `true` (the camera needs a gesture) and is cleared
+//!   automatically on the FIRST real camera frame, so the user never has
+//!   to find the resume button after accepting the permission dialog;
+//! - if the first camera fails, one retry with the other facing runs
+//!   automatically before the user sees an error.
 
 use matrix_core::config::{Config, Settings};
 use matrix_core::engine::Engine;
@@ -39,8 +52,8 @@ fn main() {
     // with WebApp through the OnceLock)
     let shared = SHARED.get_or_init(build_shared).clone();
 
-    // the camera needs a user gesture in most browsers; the start button
-    // lives in the egui UI, so start paused with the camera pending
+    // the camera needs a user gesture in most browsers; the app un-pauses
+    // itself on the first delivered camera frame (see Engine::tick callers)
     shared.inner.lock().unwrap().paused = true;
 
     let web = eframe::WebOptions::default();
@@ -76,13 +89,31 @@ impl WebApp {
         // the shared state was created in main(); the GUI's Arc is passed
         // through a thread-local handoff — simplest correct route here is a
         // second construction guarded by a global OnceLock.
-        let shared = SHARED.get_or_init(|| build_shared()).clone();
+        let shared = SHARED.get_or_init(build_shared).clone();
         let gui = GuiApp::new(shared.clone(), store, host);
         // wasm renders on a single thread; want_grid is TUI-only
         let engine = Engine::new(OUT_W, OUT_H, 1, false);
         let camera = WebCamera::new();
         // camera start needs the first user gesture: hook the pause button
         WebApp { gui, engine, camera, started: false }
+    }
+
+    /// The gesture that lets us call getUserMedia: egui translates touch into
+    /// `PointerButton` on desktop AND mobile, but keep `Touch`/`Text` matches
+    /// too — some Android WebViews deliver raw touches before the pointer
+    /// abstraction kicks in.
+    fn gesture_seen(&self, ctx: &egui::Context) -> bool {
+        ctx.input(|i| {
+            i.raw.events.iter().any(|e| {
+                matches!(
+                    e,
+                    egui::Event::PointerButton { .. }
+                        | egui::Event::Key { .. }
+                        | egui::Event::Touch { .. }
+                        | egui::Event::Text { .. }
+                )
+            })
+        })
     }
 }
 
@@ -91,16 +122,16 @@ impl eframe::App for WebApp {
         // re-assert the dark theme every frame (egui's web runner can load
         // its own default visuals after the app-creator closure ran)
         GuiApp::style_ctx(ctx);
-        // first frame after a gesture: kick off getUserMedia once
-        if !self.started && ctx.input(|i| i.raw.events.iter().any(|e| matches!(e, egui::Event::PointerButton { .. } | egui::Event::Key { .. }))) {
+        // first gesture: kick off getUserMedia once
+        if !self.started && self.gesture_seen(ctx) {
             self.started = true;
-            self.camera.request();
+            self.camera.request(None);
         }
         // engine tick: the web equivalent of the desktop pipeline loop
         if self.started {
+            self.camera.drive();
             let shared = self.gui.shared.clone();
             let cam = &mut self.camera;
-            // retro FPS limiter: skip ticks that come too early
             self.engine.tick(&shared, cam, Instant::now());
         }
         // delegate the whole UI to the shared front-end
@@ -116,52 +147,110 @@ impl eframe::App for WebApp {
 // camera
 // ---------------------------------------------------------------------------
 
-/// Browser camera: getUserMedia → hidden <video> → 2D canvas → RGB buffer.
+/// Browser camera: getUserMedia → off-screen `<video>` → 2D canvas → RGB buffer.
 struct WebCamera {
     video: Option<web_sys::HtmlVideoElement>,
     ctx: Option<web_sys::CanvasRenderingContext2d>,
     buf: Vec<u8>,
     pending: bool,
+    failed_once: bool,
 }
 
 impl WebCamera {
     fn new() -> Self {
-        WebCamera { video: None, ctx: None, buf: Vec::new(), pending: false }
+        WebCamera { video: None, ctx: None, buf: Vec::new(), pending: false, failed_once: false }
     }
 
-    /// Fire the async getUserMedia request (idempotent-ish: a second call
-    /// while pending is ignored; a failure surfaces in `Inner::status.error`).
-    fn request(&mut self) {
+    /// Fire the async getUserMedia request. `facing` overrides the
+    /// `facingMode` constraint — used for the automatic retry with the
+    /// other camera when the first one fails on Android.
+    fn request(&mut self, facing: Option<&str>) {
         if self.pending || self.video.is_some() {
             return;
         }
         self.pending = true;
-        let video = create_hidden_video();
+        let video = create_video();
         let v = video.clone();
+        let failed_once = self.failed_once;
+        let facing = facing.map(|f| f.to_string());
         wasm_bindgen_futures::spawn_local(async move {
-            match get_user_media().await {
+            match get_user_media(facing.as_deref()).await {
                 Ok(stream) => {
                     v.set_src_object(Some(&stream));
-                    // autoplay muted (user already gestured)
+                    // autoplay muted — the user already gestured; if Android
+                    // still rejects it, `drive()` re-issues play() on the
+                    // next repaint until frames actually flow.
                     v.set_autoplay(true);
                     v.set_muted(true);
+                    v.set_loop(false);
                     let _ = v.play();
                 }
                 Err(e) => {
                     log::warn!("getUserMedia failed: {:?}", e);
-                    set_camera_error("camera permission denied (allow camera access and reload)");
+                    // First failure on a phone is often "no front camera
+                    // available" (or a transient AbortError while the
+                    // permission dialog is up): retry once with the other
+                    // facing before reporting an error.
+                    if !failed_once {
+                        Camera::RETRY.with(|r| r.set(true));
+                    } else {
+                        set_camera_error("camera unavailable (allow camera access and reload)");
+                    }
                 }
             }
             CAMERA_PENDING.store(false, std::sync::atomic::Ordering::Relaxed);
         });
         self.video = Some(video);
-        let _ = self.ctx; // canvas created lazily in next_frame
+    }
+
+    /// Per-repaint camera upkeep: retry `play()` if the element stalled
+    /// (Android can reject the initial muted autoplay), and run the
+    /// automatic other-facing retry after a failure.
+    fn drive(&mut self) {
+        if let Some(v) = &self.video {
+            if v.paused() && v.ready_state() >= 1 {
+                let _ = v.play();
+            }
+            // decoding for real? un-pause the app exactly once. Keyed off
+            // the element itself (not frames pulled through the engine) so
+            // it works even while `Inner::paused` still blocks rendering.
+            if v.ready_state() >= 2 && v.video_width() > 0 {
+                if let Some(sh) = SHARED.get() {
+                    let mut g = sh.inner.lock().unwrap();
+                    if g.paused && g.status.cam == "browser camera" {
+                        g.paused = false;
+                    }
+                }
+            }
+        }
+        if !self.pending && self.video.is_none() {
+            let retry = Camera::RETRY.with(|r| r.replace(false));
+            if retry {
+                self.failed_once = true;
+                self.request(Some("environment"));
+            }
+        }
     }
 
     fn stop(&mut self) {
         if let Some(v) = self.video.take() {
-            v.set_src_object(None);
+            if let Some(s) = v.src_object() {
+                for t in s.get_tracks() {
+                    if let Ok(mt) = t.dyn_into::<web_sys::MediaStreamTrack>() {
+                        mt.stop();
+                    }
+                }
+            }
         }
+    }
+}
+
+/// Tiny per-camera state parking (the retry flag hops from the async
+/// closure back into `drive()` without fighting the borrow checker).
+struct Camera;
+impl Camera {
+    thread_local! {
+        pub static RETRY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     }
 }
 
@@ -210,10 +299,18 @@ fn set_camera_error(msg: &str) {
     }
 }
 
-fn create_hidden_video() -> web_sys::HtmlVideoElement {
+/// The camera element. NOT `display:none`: Android Chrome suspends decode
+/// for hidden video elements, which reads as "permission granted but
+/// black". A 1px, opacity-0 element pinned to the corner decodes normally
+/// and stays invisible.
+fn create_video() -> web_sys::HtmlVideoElement {
     let doc = web_sys::window().unwrap().document().unwrap();
     let v = doc.create_element("video").unwrap().dyn_into::<web_sys::HtmlVideoElement>().unwrap();
-    v.set_attribute("style", "display:none").ok();
+    v.set_attribute(
+        "style",
+        "position:fixed;left:0;top:0;width:1px;height:1px;opacity:0.01;pointer-events:none;z-index:-1;",
+    )
+    .ok();
     v.set_attribute("playsinline", "true").ok();
     v.set_attribute("autoplay", "true").ok();
     v.set_attribute("muted", "true").ok();
@@ -221,12 +318,21 @@ fn create_hidden_video() -> web_sys::HtmlVideoElement {
     v
 }
 
-async fn get_user_media() -> Result<web_sys::MediaStream, JsValue> {
+async fn get_user_media(facing: Option<&str>) -> Result<web_sys::MediaStream, JsValue> {
     let window = web_sys::window().ok_or_else(|| JsValue::from_str("no window"))?;
     let nav = window.navigator();
     let md = nav.media_devices().map_err(|_| JsValue::from_str("no media devices (needs https or localhost)"))?;
+    // Track constraints as a plain JS object: `{width: {ideal}, height:
+    // {ideal}, facingMode}`. `ideal` (not `exact`) lets phones pick a working
+    // camera/size freely, and facingMode only when retrying the other camera.
+    let track = js_sys::Object::new();
+    js_sys::Reflect::set(&track, &JsValue::from_str("width"), &js_val_ideal(1280))?;
+    js_sys::Reflect::set(&track, &JsValue::from_str("height"), &js_val_ideal(720))?;
+    if let Some(f) = facing {
+        js_sys::Reflect::set(&track, &JsValue::from_str("facingMode"), &JsValue::from_str(f))?;
+    }
     let cons = web_sys::MediaStreamConstraints::new();
-    cons.set_video(&JsValue::from_bool(true));
+    cons.set_video(&track);
     cons.set_audio(&JsValue::from_bool(false));
     let promise = md.get_user_media_with_constraints(&cons)?;
     let stream = wasm_bindgen_futures::JsFuture::from(promise).await?;
@@ -234,10 +340,21 @@ async fn get_user_media() -> Result<web_sys::MediaStream, JsValue> {
     Ok(stream)
 }
 
+/// Build the JS `{ ideal: N }` constraint value.
+fn js_val_ideal(v: u32) -> JsValue {
+    let o = js_sys::Object::new();
+    let _ = js_sys::Reflect::set(&o, &JsValue::from_str("ideal"), &JsValue::from_f64(v as f64));
+    JsValue::from(o)
+}
+
 impl FrameSource for WebCamera {
     fn next_frame(&mut self) -> Option<(Vec<u8>, usize, usize)> {
         let v = self.video.as_ref()?;
         if v.ready_state() < 2 || v.video_width() == 0 {
+            // paused or metadata-less: nudge play() (Android autoplay stall)
+            if v.paused() {
+                let _ = v.play();
+            }
             return None;
         }
         let (w, h) = (v.video_width(), v.video_height());
@@ -253,7 +370,6 @@ impl FrameSource for WebCamera {
             }
             self.ctx.as_ref().unwrap()
         };
-        let _canvas = ctx.canvas();
         ctx.draw_image_with_html_video_element(&v, 0.0, 0.0).ok()?;
         // getImageData → RGBA; engine wants RGB
         let img = ctx.get_image_data(0.0, 0.0, w as f64, h as f64).ok()?;

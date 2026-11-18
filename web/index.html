@@ -2,24 +2,34 @@
 <html lang="en">
 <head>
     <meta charset="utf-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
     <title>matrix-cam — webcam → character effects</title>
     <style>
-        html, body { margin: 0; padding: 0; height: 100%; background: #08090c; }
-        canvas#matrix-cam { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+        html, body { margin: 0; padding: 0; height: 100%; background: #08090c; overflow: hidden; }
+        /* 100dvh tracks the dynamic viewport on mobile (browser chrome
+           shrinking); the 100vh fallback covers older browsers. */
+        canvas#matrix-cam {
+            position: fixed; inset: 0; width: 100vw; height: 100vh; height: 100dvh;
+            display: block;
+            /* the app handles all gestures itself: stop pull-to-refresh,
+               double-tap zoom and long-press selection from fighting it */
+            touch-action: none;
+            -webkit-user-select: none; user-select: none;
+            -webkit-touch-callout: none;
+        }
         /* eframe takes over the whole canvas; this notice sits above it until
            the wasm module boots, then the GUI paints over it. */
         .boot { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center;
-                color: #8f8d85; font: 14px monospace; pointer-events: none; z-index: 10; }
+                color: #8f8d85; font: 14px monospace; pointer-events: none; z-index: 10;
+                padding: 24px; text-align: center; }
         .boot.hidden { display: none; }
         a { color: #ff2f2f; }
     </style>
     <link data-trunk rel="icon" href="favicon.svg"/>
     <link data-trunk rel="rust" href="../crates/matrix-web/Cargo.toml" data-bin="matrix-cam-web" data-type="main"/>
-
 </head>
 <body>
-    <div class="boot" id="boot">▚ matrix-cam web — loading engine…</div>
+    <div class="boot" id="boot">▚ matrix-cam web — loading engine…<br>tap anywhere to start the camera</div>
     <canvas id="matrix-cam"></canvas>
     <script>
         // hide the boot notice once the wasm module has painted its first frame
