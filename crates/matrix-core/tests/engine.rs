@@ -168,11 +168,16 @@ impl matrix_core::pipeline::Clock for ManualClock {
 fn pipeline_renders_until_quit() {
     // The desktop render loop, driven with a manual clock and a finite
     // camera: after the frames dry up, set quit and run must return.
+    // Holds the report lock for the whole body: the REAL pipeline runs
+    // guarded ticks here, and a drought past 300 empty frames captures
+    // "camera lost" on THIS thread — that must not race the other
+    // report-asserting tests.
+    let _g = REPORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     let sh = shared(false);
     let spec = PipelineSpec { w: 64, h: 48, threads: 1, want_grid: false };
     let sh2 = sh.clone();
     let handle = std::thread::spawn(move || {
-        let cam = FakeCam::frames(2);
+        let cam = FakeCam::frames(usize::MAX);
         let sink = VecSink(Vec::new());
         let clock = ManualClock { t: Mutex::new(Instant::now()) };
         // give the drought time to be just a hiccup (not fatal), then quit
@@ -214,6 +219,11 @@ fn guarded_tick_catches_panic_and_captures_report() {
 
     // the report store has the full report (popup reads this)
     let reps = matrix_core::report::reports_snapshot();
+    if reps.len() != 1 {
+        for (i, r) in reps.iter().enumerate() {
+            eprintln!("report[{i}] kind={:?} msg={} origin={}", r.kind, r.message, r.origin);
+        }
+    }
     assert_eq!(reps.len(), 1, "exactly one report");
     assert_eq!(reps[0].kind, matrix_core::report::Kind::Panic);
     assert!(reps[0].message.contains("exploding camera"));
