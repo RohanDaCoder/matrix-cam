@@ -1,15 +1,16 @@
-//! Integration tests for the shared GUI: the crash popup lifecycle driven
-//! through a real (headless) egui context, plus the Store trait's JSON
-//! round-trip through a temp-file implementation.
+//! Integration tests for the v2.5 control-deck GUI: the crash dialog
+//! lifecycle through a real (headless) egui context, the custom widgets
+//! (segmented control clicks, deck-slider drag geometry, toggle) driven
+//! with synthesized pointer input, and the Store JSON round-trip.
 
 use matrix_gui::gui::{GuiApp, Store};
-use matrix_core::config::{Config, Settings};
+use matrix_gui::widgets;
+use matrix_core::config::{Config, Settings, Style};
 use matrix_core::report;
 use matrix_core::state::{Inner, Shared, Status};
 use std::sync::{Arc, Mutex};
 
-/// The report store is process-global (panic hooks must reach it from
-/// anywhere), so tests touching it hold this guard for their whole body.
+/// The report store is process-global; tests touching it hold this guard.
 static REPORT_LOCK: Mutex<()> = Mutex::new(());
 
 /// Temp-file Store: same JSON model the desktop's FileStore uses.
@@ -79,48 +80,47 @@ impl matrix_gui::gui::UpdaterHost for NoopUpdater {
     }
 }
 
+// ---------------------------------------------------------------------------
+// crash dialog lifecycle
+// ---------------------------------------------------------------------------
+
 #[test]
 fn crash_popup_auto_opens_on_report_and_clears() {
-    let _g = REPORT_LOCK.lock().unwrap();
+    let _g = REPORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     report::clear();
     let (mut app, _store) = app();
 
-    // no reports: nothing drawn
     let ctx = egui::Context::default();
     let mut drawn = false;
     ctx.run(egui::RawInput::default(), |ctx| drawn = app.crash_popup(ctx));
-    assert!(!drawn, "no popup without reports");
+    assert!(!drawn, "no dialog without reports");
 
-    // a report arrives (as if the panic hook captured one)
     report::capture(report::Kind::Panic, "test panic", "frame 0: test", "test.rs:1:1");
     ctx.run(egui::RawInput::default(), |ctx| drawn = app.crash_popup(ctx));
-    assert!(drawn, "popup auto-opens on the first report");
+    assert!(drawn, "dialog auto-opens on the first report");
 
-    // still open on later frames until dismissed/cleared
     ctx.run(egui::RawInput::default(), |ctx| drawn = app.crash_popup(ctx));
-    assert!(drawn, "popup stays open");
+    assert!(drawn, "dialog stays open");
 
-    // clear all: next frame nothing is drawn
     report::clear();
     ctx.run(egui::RawInput::default(), |ctx| drawn = app.crash_popup(ctx));
-    assert!(!drawn, "popup gone after clear");
+    assert!(!drawn, "dialog gone after clear");
     report::clear();
 }
 
 #[test]
 fn crash_popup_text_contains_fix_information() {
-    let _g = REPORT_LOCK.lock().unwrap();
+    let _g = REPORT_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     report::clear();
     let (mut app, _store) = app();
     report::set_context(|c| {
         c.host = "web".into();
-        c.version = "v2.4.0".into();
+        c.version = "v2.5.0".into();
         c.platform = "test platform".into();
     });
     report::log_line("camera opened: front");
     report::capture(report::Kind::Error, "getUserMedia denied", "  at camera (main.rs:9)", "camera.rs:9:1");
 
-    // draw the popup; then assert the paste-text carries everything
     let ctx = egui::Context::default();
     let mut drawn = false;
     ctx.run(egui::RawInput::default(), |ctx| drawn = app.crash_popup(ctx));
@@ -130,17 +130,143 @@ fn crash_popup_text_contains_fix_information() {
     assert!(text.contains("at camera (main.rs:9)"), "stack trace");
     assert!(text.contains("origin:  camera.rs:9:1"), "origin");
     assert!(text.contains("host:    web"), "host context");
-    assert!(text.contains("version: v2.4.0"), "version context");
+    assert!(text.contains("version: v2.5.0"), "version context");
     assert!(text.contains("platform: test platform"), "platform context");
     assert!(text.contains("recent log:"), "log section");
     assert!(text.contains("camera opened: front"), "log content");
     report::clear();
 }
 
+// ---------------------------------------------------------------------------
+// custom widgets: segmented + slider + toggle driven with real input
+// ---------------------------------------------------------------------------
+
+/// Warm up with a plain frame (widgets register for hit-testing), then a
+/// second frame carrying the click at `pos`. egui hit-tests against the
+/// previous frame's layout, so a cold single-frame click can never land.
+fn click_at(ctx: &egui::Context, pos: egui::Pos2, mut f: impl FnMut(&mut egui::Ui)) {
+    ctx.run(egui::RawInput::default(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| f(ui));
+    });
+    let mut raw = egui::RawInput::default();
+    raw.events = vec![
+        egui::Event::PointerMoved(pos),
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: Default::default(),
+        },
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: Default::default(),
+        },
+    ];
+    ctx.run(raw, |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| f(ui));
+    });
+}
+
+#[test]
+fn segmented_control_selects_clicked_option() {
+    let ctx = egui::Context::default();
+    let mut style = Style::Dots;
+    let mut hits = 0;
+    // warm-up + probe several x positions across the panel
+    for x in [40.0, 140.0, 240.0, 340.0] {
+        click_at(&ctx, egui::pos2(x, 30.0), |ui| {
+            if widgets::segmented(ui, "style", &Style::ALL, |s| s.label().to_string(), &mut style).is_some() {
+                hits += 1;
+            }
+        });
+    }
+    assert!(hits >= 1, "at least one segment click registered");
+    assert_ne!(style, Style::Dots, "selection moved off the default");
+}
+
+#[test]
+fn deck_slider_drag_updates_value() {
+    let ctx = egui::Context::default();
+    let mut v: u32 = 40;
+    let eff = v;
+    let mut track_rect = egui::Rect::NOTHING;
+    // warm-up frame records where the track landed (probe via cursor delta
+    // is fragile; instead mirror the layout math: label 92 + margin, then
+    // track up to 320 wide, 10 tall, vertically centered in a 30px row at
+    // the top of the panel (y 8..38 → track center y ≈ 23).
+    ctx.run(egui::RawInput::default(), |ctx| {
+        egui::CentralPanel::default().show(ctx, |ui| {
+            widgets::deck_slider_u32(ui, "detail", "tip", &mut v, eff, false, 40..=220);
+            track_rect = egui::Rect::from_min_max(
+                egui::pos2(ui.min_rect().left() + 94.0, 19.0),
+                egui::pos2(ui.min_rect().left() + 94.0 + 320.0, 29.0),
+            );
+        });
+    });
+    // drag across the track across SEPARATE frames (a drag only registers
+    // while the button stays pressed between frames): down → move → move → up
+    let y = track_rect.center().y;
+    let x0 = track_rect.left() + 20.0;
+    let x1 = track_rect.left() + 300.0;
+    let frame = |events, v: &mut u32| {
+        let mut raw = egui::RawInput::default();
+        raw.events = events;
+        ctx.run(raw, |ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                widgets::deck_slider_u32(ui, "detail", "tip", v, *v, false, 40..=220);
+            });
+        });
+    };
+    frame(
+        vec![
+            egui::Event::PointerMoved(egui::pos2(x0, y)),
+            egui::Event::PointerButton {
+                pos: egui::pos2(x0, y),
+                button: egui::PointerButton::Primary,
+                pressed: true,
+                modifiers: Default::default(),
+            },
+        ],
+        &mut v,
+    );
+    frame(
+        vec![egui::Event::PointerMoved(egui::pos2((x0 + x1) / 2.0, y))],
+        &mut v,
+    );
+    frame(
+        vec![
+            egui::Event::PointerMoved(egui::pos2(x1, y)),
+            egui::Event::PointerButton {
+                pos: egui::pos2(x1, y),
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: Default::default(),
+            },
+        ],
+        &mut v,
+    );
+    assert!(v > 40, "slider drag changed the value (now {v})");
+}
+
+#[test]
+fn toggle_flips_on_click() {
+    let ctx = egui::Context::default();
+    let mut on = false;
+    click_at(&ctx, egui::pos2(200.0, 30.0), |ui| {
+        widgets::toggle(ui, "invert", "tip", &mut on);
+    });
+    assert!(on, "toggle flipped");
+}
+
+// ---------------------------------------------------------------------------
+// store round-trip (unchanged behavior, re-verified against the new crate)
+// ---------------------------------------------------------------------------
+
 #[test]
 fn settings_store_round_trip() {
     let (app, store) = app();
-    // same model as the GUI's save button: current settings + presets
     let mut cfg = store.load();
     let g = app.shared.inner.lock().unwrap();
     let mut set = g.set.clone();
@@ -166,3 +292,4 @@ fn store_load_with_missing_file_gives_defaults() {
     assert!(cfg.set.is_none());
     assert_eq!(cfg.preview_fps, 30);
 }
+

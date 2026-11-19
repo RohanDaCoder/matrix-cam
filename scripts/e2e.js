@@ -73,7 +73,8 @@ im = np.asarray(Image.open('/tmp/t2.png').convert('RGB'), dtype=int)
 warn_rows = 0; red_rows = 0
 for y in range(0, im.shape[0], 2):
     row = im[y]
-    if ((row[:, 0] > 150) & (row[:, 1] > 100) & (row[:, 1] < 200) & (row[:, 2] < 80)).sum() > 5: warn_rows += 1
+    # v2.5 dialog: accent header strip (ACCENT_DIM band ~ (122,28,28)) with ACCENT text
+    if ((row[:, 0] > 90) & (row[:, 0] < 170) & (row[:, 1] < 60) & (row[:, 2] < 60)).sum() > 30: warn_rows += 1
     if ((row[:, 0] > 150) & (row[:, 1] < 90) & (row[:, 2] < 90)).sum() > 5: red_rows += 1
 print(warn_rows, red_rows)
 `).trim().split(/\s+/).map(Number);
@@ -217,7 +218,8 @@ im = np.asarray(Image.open('/tmp/t6-b.png').convert('RGB'), dtype=int)
 warn_rows = 0; red_rows = 0
 for y in range(0, im.shape[0], 2):
     row = im[y]
-    if ((row[:, 0] > 150) & (row[:, 1] > 100) & (row[:, 1] < 200) & (row[:, 2] < 80)).sum() > 5: warn_rows += 1
+    # v2.5 dialog: accent header strip (ACCENT_DIM band) with ACCENT text
+    if ((row[:, 0] > 90) & (row[:, 0] < 170) & (row[:, 1] < 60) & (row[:, 2] < 60)).sum() > 30: warn_rows += 1
     if ((row[:, 0] > 150) & (row[:, 1] < 90) & (row[:, 2] < 90)).sum() > 5: red_rows += 1
 changed = int((np.abs(a-b) > 8).sum())
 print(changed, warn_rows, red_rows)
