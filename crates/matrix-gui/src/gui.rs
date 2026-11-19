@@ -89,6 +89,13 @@ pub struct GuiApp {
     tab: Tab,
     show_crash: bool,
     crash_seen: bool,
+    /// The fps-limiter popover (click the fps chip). `None` while closed;
+    /// while open it holds the custom-value scratch the slider writes to.
+    fps_pop: Option<u32>,
+    /// Screen-space rect of the fps chip (captured in top_bar each frame;
+    /// the popover anchors under it and is rendered at the context level
+    /// AFTER the panels — a child of no panel).
+    fps_chip_rect: egui::Rect,
 }
 
 impl GuiApp {
@@ -105,6 +112,8 @@ impl GuiApp {
             tab: Tab::Look,
             show_crash: false,
             crash_seen: false,
+            fps_pop: None,
+            fps_chip_rect: egui::Rect::NOTHING,
         }
     }
 
@@ -120,13 +129,127 @@ impl GuiApp {
         c.set = Some(g.set.clone());
         c.auto = g.auto.clone();
         c.user_presets = g.user_presets.clone();
+        c.fps_limit_enabled = g.fps_limit.enabled;
+        c.fps_limit_fps = g.fps_limit.fps;
         self.store.save(&c);
     }
-}
 
-// ---------------------------------------------------------------------------
-// the frame
-// ---------------------------------------------------------------------------
+    /// Apply a frame-rate limit (or lift it with `None`) live + persist it.
+    /// The pipeline reads `fps_limit` every frame, so this takes effect on
+    /// the very next frame.
+    pub fn set_fps_limit(&self, limit: Option<u32>) {
+        {
+            let mut g = self.shared.inner.lock().unwrap();
+            match limit {
+                Some(fps) => {
+                    g.fps_limit.enabled = true;
+                    g.fps_limit.fps = fps.clamp(1, 60);
+                }
+                None => g.fps_limit.enabled = false,
+            }
+        }
+        self.save();
+    }
+
+    /// True while the fps limiter popover is open.
+    pub fn fps_popover_open(&self) -> bool {
+        self.fps_pop.is_some()
+    }
+
+    /// The fps-limiter popover, anchored under the fps chip. OFF lifts the
+    /// limit; the preset squares set the retro-chop rates; the slider is
+    /// the custom path. Applies live and persists on every change.
+    ///
+    /// Open state is `self.fps_pop` (set by the chip click) rendered as
+    /// our own `Area` — deliberately NOT egui's popup memory: the popup
+    /// API closes on outside clicks in the same frame the popover opens,
+    /// which races the chip click; owning the state keeps the behavior
+    /// obvious (chip toggles, any preset/OFF click closes, Esc closes).
+    fn fps_limiter_popover(&mut self, ctx: &egui::Context) {
+        let Some(mut custom) = self.fps_pop else { return };
+        let anchor = if self.fps_chip_rect == egui::Rect::NOTHING {
+            egui::pos2(240.0, 30.0)
+        } else {
+            self.fps_chip_rect.left_bottom()
+        };
+        let mut close = false;
+        // Esc closes (checked before the Area so it works even if the
+        // pointer is elsewhere)
+        if ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            close = true;
+        }
+        let pop_id = egui::Id::new("fps-limiter-area");
+        egui::Area::new(pop_id)
+            .order(egui::Order::Foreground)
+            .fixed_pos(anchor)
+            .show(ctx, |ui| {
+                // the popover card: BG1 fill + hairline + accent edge on top
+                let frame = egui::Frame::none()
+                    .fill(BG1)
+                    .stroke(egui::Stroke::new(1.0_f32, LINE))
+                    .inner_margin(egui::Margin::same(10.0));
+                frame.show(ui, |ui| {
+                    ui.set_min_width(196.0);
+                    // title
+                    let gal = ui.painter().layout_no_wrap(
+                        "FRAME RATE LIMIT".to_owned(),
+                        egui::FontId::new(10.5, egui::FontFamily::Monospace),
+                        FG2,
+                    );
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(gal.size().x + 2.0, 16.0), egui::Sense::hover());
+                    ui.painter().galley(egui::pos2(r.left(), r.center().y - gal.size().y / 2.0), gal, FG2);
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 1.0), egui::Sense::hover());
+                    ui.painter().rect_filled(r, egui::Rounding::same(0.0), LINE);
+                    ui.add_space(6.0);
+
+                    // OFF row
+                    if widgets::ghost_button(ui, "OFF — full speed").clicked() {
+                        self.set_fps_limit(None);
+                        close = true;
+                    }
+                    ui.add_space(6.0);
+
+                    // preset squares: the retro-chop rates; active = accent
+                    let presets = [8u32, 12, 15, 24, 30, 60];
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        for f in presets {
+                            let active = {
+                                let g = self.shared.inner.lock().unwrap();
+                                g.fps_limit.enabled && g.fps_limit.fps == f
+                            };
+                            if widgets::fps_square(ui, &f.to_string(), active).clicked() {
+                                self.set_fps_limit(Some(f));
+                                close = true;
+                            }
+                        }
+                    });
+                    let note = ui.painter().layout_no_wrap(
+                        "8-15 = pixel-game chop".to_owned(),
+                        egui::FontId::new(9.5, egui::FontFamily::Monospace),
+                        FG3,
+                    );
+                    let (r, _) = ui.allocate_exact_size(egui::vec2(note.size().x + 2.0, 13.0), egui::Sense::hover());
+                    ui.painter().galley(egui::pos2(r.left(), r.center().y - note.size().y / 2.0), note, FG3);
+
+                    // custom slider: apply live while dragged (the scratch
+                    // is seeded from the live limit, so only real drags write)
+                    ui.add_space(4.0);
+                    let before = custom;
+                    widgets::deck_slider_u32(ui, "custom", "Drag to any rate 1-60.", &mut custom, before, false, 1..=60);
+                    if custom != before {
+                        self.set_fps_limit(Some(custom));
+                    }
+                })
+                .inner
+            });
+        if close {
+            self.fps_pop = None;
+        } else {
+            self.fps_pop = Some(custom);
+        }
+    }
+}
 
 impl eframe::App for GuiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
@@ -165,6 +288,10 @@ impl eframe::App for GuiApp {
             .show(ctx, |ui| {
                 self.stage(ui);
             });
+
+        // the fps popover LAST: at the context level, above every panel,
+        // so its widgets hit-test without any panel ancestry
+        self.fps_limiter_popover(ctx);
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
@@ -177,6 +304,13 @@ impl GuiApp {
     // -------------------------------------------------------------------
     // top command bar
     // -------------------------------------------------------------------
+    /// Draw the top bar + the fps popover (exposed for the integration
+    /// tests; mirrors what `update` renders for this feature).
+    pub fn top_bar_for_test(&mut self, ctx: &egui::Context) {
+        self.top_bar(ctx);
+        self.fps_limiter_popover(ctx);
+    }
+
     fn top_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("bar")
             .frame(
@@ -212,11 +346,34 @@ impl GuiApp {
                         (s.backend.clone(), s.out_w, s.out_h, s.fps, s.cam.clone(), s.error.clone())
                     };
                     widgets::chip(ui, &format!("{w}×{h}"), FG2, "Output resolution").on_hover_text("output size");
-                    widgets::chip(ui, &format!("{fps:.1} fps"), if fps < 10.0 { WARN } else { FG2 }, "Measured preview frame rate");
-                    let (paused, auto, retro) = {
+                    let (paused, auto, retro, lim_fps) = {
                         let g = self.shared.inner.lock().unwrap();
-                        (g.paused, g.auto.enabled, g.fps_limit.enabled)
+                        (g.paused, g.auto.enabled, g.fps_limit.enabled, g.fps_limit.fps)
                     };
+                    // the fps chip is the limiter control: it shows the
+                    // MEASURED rate, and the limit once one is active.
+                    // Click it to open the limiter popover.
+                    let fps_label = if retro {
+                        format!("{lim_fps} fps lim")
+                    } else {
+                        format!("{fps:.1} fps")
+                    };
+                    let fps_chip = widgets::chip(
+                        ui,
+                        &fps_label,
+                        if retro || fps < 10.0 { WARN } else { FG2 },
+                        "Measured preview frame rate — click to limit it manually (retro chop)",
+                    );
+                    self.fps_chip_rect = fps_chip.rect;
+                    if fps_chip.clicked() {
+                        // toggle the popover, seeded with the current limit
+                        if self.fps_pop.is_some() {
+                            self.fps_pop = None;
+                        } else {
+                            let g = self.shared.inner.lock().unwrap();
+                            self.fps_pop = Some(g.fps_limit.fps.clamp(1, 60));
+                        }
+                    }
                     // the state lamp: LIVE / PAUSED — the primary indicator
                     let lamp = if paused { "❚❚ PAUSED" } else { "● LIVE" };
                     let lc = if paused { WARN } else { OK };
@@ -227,10 +384,6 @@ impl GuiApp {
                     }
                     if auto {
                         widgets::chip(ui, "AUTO", ACCENT, "Adaptive tuning is active");
-                    }
-                    if retro {
-                        let fpsx = self.shared.inner.lock().unwrap().fps_limit.fps;
-                        widgets::chip(ui, &format!("RETRO {fpsx}"), WARN, "Frame rate limited (retro look)");
                     }
                     if !err.is_empty() {
                         widgets::chip(ui, "ERR", ACCENT, &err);
@@ -266,7 +419,6 @@ impl GuiApp {
 
     // -------------------------------------------------------------------
     // preview stage (central panel)
-    // -------------------------------------------------------------------
     fn stage(&mut self, ui: &mut egui::Ui) {
         let view = { self.shared.inner.lock().unwrap().view.clone() };
         let stage = ui.available_rect_before_wrap();
@@ -643,18 +795,22 @@ impl GuiApp {
                 widgets::plain_u32(ui, "recompute every", "How often auto reconsiders targets (ms).", &mut a.interval_ms, 16..=1000);
             });
 
-        // fps limiter
-        widgets::section(ui, "FRAME LIMIT", "retro chop");
+        // fps limiter (same machinery as the top-bar popover; both persist)
+        widgets::section(ui, "FRAME LIMIT", "retro chop — also click the fps chip in the top bar");
         ui.horizontal(|ui| {
             let mut on = g.fps_limit.enabled;
             if widgets::toggle(ui, "limit fps", "Cap the output frame rate for an 8-bit / retro feel.", &mut on) {
-                g.fps_limit.enabled = on;
+                self.set_fps_limit(if on { Some(g.fps_limit.fps) } else { None });
             }
-            ui.add_enabled(
+            let mut fpsv = g.fps_limit.fps;
+            let dv = ui.add_enabled(
                 g.fps_limit.enabled,
-                egui::DragValue::new(&mut g.fps_limit.fps).range(1..=60).suffix(" fps").speed(1),
+                egui::DragValue::new(&mut fpsv).range(1..=60).suffix(" fps").speed(1),
             )
             .on_hover_text("Type or drag a number, 1-60. Try 8-15 for pixel-game vibes.");
+            if dv.changed() && fpsv != g.fps_limit.fps {
+                self.set_fps_limit(Some(fpsv));
+            }
         });
 
         // updates

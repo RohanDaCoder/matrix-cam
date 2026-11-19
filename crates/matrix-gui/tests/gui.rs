@@ -293,3 +293,121 @@ fn store_load_with_missing_file_gives_defaults() {
     assert_eq!(cfg.preview_fps, 30);
 }
 
+
+// ---------------------------------------------------------------------------
+// fps limiter: set_fps_limit live + persist + the popover driven by clicks
+// ---------------------------------------------------------------------------
+
+#[test]
+fn fps_limit_set_applies_live_and_persists() {
+    let (app, store) = app();
+    app.set_fps_limit(Some(8));
+    {
+        let g = app.shared.inner.lock().unwrap();
+        assert!(g.fps_limit.enabled, "limit enabled");
+        assert_eq!(g.fps_limit.fps, 8, "fps stored");
+    }
+    let cfg = store.load();
+    assert!(cfg.fps_limit_enabled, "persisted: enabled");
+    assert_eq!(cfg.fps_limit_fps, 8, "persisted: fps");
+
+    // lift the limit
+    app.set_fps_limit(None);
+    {
+        let g = app.shared.inner.lock().unwrap();
+        assert!(!g.fps_limit.enabled, "limit lifted");
+    }
+    let cfg = store.load();
+    assert!(!cfg.fps_limit_enabled, "persisted: lifted");
+
+    // clamp out-of-range values
+    app.set_fps_limit(Some(999));
+    assert_eq!(app.shared.inner.lock().unwrap().fps_limit.fps, 60, "clamped high");
+    app.set_fps_limit(Some(0));
+    assert_eq!(app.shared.inner.lock().unwrap().fps_limit.fps, 1, "clamped low");
+}
+
+#[test]
+fn fps_chip_click_opens_popover_and_preset_applies() {
+    let (mut app, store) = app();
+    let ctx = egui::Context::default();
+    GuiApp::style_ctx(&ctx);
+    // warm-up so the top-bar chips register for hit-testing
+    ctx.run(egui::RawInput::default(), |ctx| app.top_bar_for_test(ctx));
+
+    // one click at the fps chip (y ~15 in the bar; sweep x to find it)
+    let mut opened = false;
+    for x in [170.0, 185.0, 199.0, 215.0, 230.0] {
+        let mut raw = egui::RawInput::default();
+        raw.screen_rect = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
+        raw.events = vec![
+            egui::Event::PointerMoved(egui::pos2(x, 15.0)),
+            egui::Event::PointerButton { pos: egui::pos2(x, 15.0), button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+            egui::Event::PointerButton { pos: egui::pos2(x, 15.0), button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+        ];
+        ctx.run(raw, |ctx| app.top_bar_for_test(ctx));
+        if app.fps_popover_open() {
+            opened = true;
+            break;
+        }
+    }
+    assert!(opened, "fps chip click opened the limiter popover");
+
+    // a PLAIN frame first: the popover's squares must exist in the widget
+    // list for a full frame before a click can hit-test them
+    ctx.run(egui::RawInput::default(), |ctx| app.top_bar_for_test(ctx));
+
+    // click the first preset square (8 fps) — interior of its rect
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
+    raw.events = vec![
+        egui::Event::PointerMoved(egui::pos2(215.0, 105.0)),
+        egui::Event::PointerButton { pos: egui::pos2(215.0, 105.0), button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+        egui::Event::PointerButton { pos: egui::pos2(215.0, 105.0), button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+    ];
+    ctx.run(raw, |ctx| app.top_bar_for_test(ctx));
+    {
+        let g = app.shared.inner.lock().unwrap();
+        assert!(g.fps_limit.enabled, "preset click enabled the limit");
+        assert_eq!(g.fps_limit.fps, 8, "preset click set the 8 fps square");
+    }
+    // popover closed after choosing a preset
+    assert!(!app.fps_popover_open(), "popover closed after preset");
+
+    // persisted
+    let cfg = store.load();
+    assert!(cfg.fps_limit_enabled, "preset persisted: enabled");
+    assert_eq!(cfg.fps_limit_fps, 8, "preset persisted: fps");
+
+    // re-open and lift via OFF
+    for x in [170.0, 185.0, 199.0, 215.0, 230.0] {
+        let mut raw = egui::RawInput::default();
+        raw.screen_rect = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
+        raw.events = vec![
+            egui::Event::PointerMoved(egui::pos2(x, 15.0)),
+            egui::Event::PointerButton { pos: egui::pos2(x, 15.0), button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+            egui::Event::PointerButton { pos: egui::pos2(x, 15.0), button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+        ];
+        ctx.run(raw, |ctx| app.top_bar_for_test(ctx));
+        if app.fps_popover_open() {
+            break;
+        }
+    }
+    assert!(app.fps_popover_open(), "popover re-opened");
+    ctx.run(egui::RawInput::default(), |ctx| app.top_bar_for_test(ctx));
+    // OFF row sits above the squares (y ~ 60-80, x ~ 209+)
+    let mut raw = egui::RawInput::default();
+    raw.screen_rect = Some(egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0)));
+    raw.events = vec![
+        egui::Event::PointerMoved(egui::pos2(260.0, 75.0)),
+        egui::Event::PointerButton { pos: egui::pos2(260.0, 75.0), button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+        egui::Event::PointerButton { pos: egui::pos2(260.0, 75.0), button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+    ];
+    ctx.run(raw, |ctx| app.top_bar_for_test(ctx));
+    {
+        let g = app.shared.inner.lock().unwrap();
+        assert!(!g.fps_limit.enabled, "OFF lifted the limit");
+    }
+    let cfg = store.load();
+    assert!(!cfg.fps_limit_enabled, "lift persisted");
+}

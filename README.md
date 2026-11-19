@@ -1,4 +1,4 @@
-# matrix-cam 2.5 — Windows 11 + Web
+# matrix-cam 2.5.1 — Windows 11 + Web
 
 Webcam → dot-matrix / character glitch effect → a real camera device. GUI **and** TUI,
 live preview, plain-language settings, character-set options, a retro FPS limiter,

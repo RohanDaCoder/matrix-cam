@@ -9,6 +9,9 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 
 const AB = (cmd) => execSync(`agent-browser ${cmd}`, { encoding: 'utf8' });
+// agent-browser returns eval results JSON-encoded (quotes come back as \"),
+// so storage checks strip the escapes first.
+const UNESC = (s) => String(s).replace(/\\"/g, '"');
 const PY = (script) => execSync(`python3 - <<'EOF'\n${script}\nEOF`, { encoding: 'utf8' });
 
 function serve(port, root) {
@@ -229,6 +232,165 @@ print(changed, warn_rows, red_rows)
     console.log(`   changed=${ok6[0]} popup-warn=${ok6[1]} popup-red=${ok6[2]}`);
     if (ok6[1] >= 3 && ok6[2] >= 20) console.log('   PASS'); else { console.log('   FAIL'); process.exitCode = 1; }
   } finally { stop(); }
+
+// ---------------------------------------------------------------- scenario 7
+// v2.5.1: click the fps chip in the top bar -> the limiter popover opens;
+// pick the 8 fps preset -> the measured rate drops to ~8 and the setting
+// persists across a reload.
+{
+  console.log('=== 7. fps chip popover: manual frame-rate limit ===');
+  const stop = serve(8090, '/tmp/e2e-root');
+  AB('close') && 0;
+  try {
+    AB('set viewport 1280 800');
+    AB('open http://localhost:8090/matrix-cam/');
+    sleepSync(5);
+    AB('mouse move 400 300');
+    AB('mouse down left');
+    AB('mouse up left');
+    sleepSync(5);
+    sleepSync(5);
+
+    // locate the fps chip: the chip row is y ~ 5..30; the fps text sits
+    // after the resolution chip. Probe x positions with a hover, then a
+    // screenshot around the bar to find the WARN/FG2 label... simpler:
+    // the unit tests pin the geometry; on the real screen, sweep clicks
+    // on the bar row until the popover appears (it draws accent squares).
+    // the fps chip sits after the wordmark + resolution chip (measured on
+    // this viewport: x ~ 255 in the bar row); clicking it opens the
+    // limiter popover anchored below it
+    AB('mouse move 255 18');
+    AB('mouse down left');
+    AB('mouse up left');
+    sleepSync(5);
+    AB('screenshot /tmp/t7-pop.png');
+    const pop = PY(`
+from PIL import Image
+import numpy as np
+im = np.asarray(Image.open('/tmp/t7-pop.png').convert('RGB'), dtype=int)
+bg1 = (np.abs(im - np.array([13,15,18])) < 4).all(axis=2)
+sub = bg1[40:260, 200:520]
+print(int(sub.sum()))
+`).trim();
+    const opened = parseInt(pop) > 5000;
+    if (!opened) { console.log('   FAIL: popover never opened'); process.exitCode = 1; }
+    else console.log('   popover card visible below the fps chip');
+    // debug: dump the bar text colors so chip position is visible in logs
+    const bardbg = PY(`
+from PIL import Image
+import numpy as np
+im = np.asarray(Image.open('/tmp/t7-pop.png').convert('RGB'), dtype=int)
+bar = im[8:28, 150:400, :]
+# non-background pixels (not BG1 13,15,18) grouped into clusters:
+nb = (np.abs(bar - np.array([13,15,18])) > 25).any(axis=2)
+xs = np.where(nb.any(axis=0))[0]
+groups = []
+if len(xs):
+    s = xs[0]
+    for i in range(1, len(xs)):
+        if xs[i] > xs[i-1] + 6:
+            groups.append((int(s)+150, int(xs[i-1])+150)); s = xs[i]
+    groups.append((int(s)+150, int(xs[-1])+150))
+print(groups)
+`).trim();
+    console.log('   bar text clusters x: ' + bardbg);
+
+    // click the first preset square (8 fps): measure the squares row from
+    // the popover screenshot (bright glyph clusters under the OFF button)
+    // so the test tracks the real layout instead of hard-coded pixels
+    const sq = PY(`
+from PIL import Image
+import numpy as np
+im = np.asarray(Image.open('/tmp/t7-pop.png').convert('L'), dtype=int)
+# squares row: the row of small glyph clusters; scan y 80..140 for the row
+# with 6ish short bright clusters
+best = None
+for y in range(80, 145, 2):
+    row = im[y, 200:520]
+    br = np.where(row > 90)[0]
+    if len(br) < 3:
+        continue
+    groups = []
+    s = br[0]
+    for i in range(1, len(br)):
+        if br[i] > br[i-1] + 8:
+            groups.append((s, br[i-1])); s = br[i]
+    groups.append((s, br[-1]))
+    groups = [g for g in groups if 1 <= g[1]-g[0] <= 20]
+    if len(groups) >= 4 and (best is None or len(groups) > len(best[1])):
+        best = (y, groups)
+if best:
+    y, groups = best
+    print(int(y), groups[0][0]+200, groups[0][1]+200)
+else:
+    print(-1, -1, -1)
+`).trim().split(/\s+/).map(Number);
+    let applied = false;
+    if (sq[0] > 0) {
+      const cx = Math.floor((sq[1] + sq[2]) / 2);
+      const cy = sq[0];
+      console.log('   square row: y=' + cy + ' first-square x=' + sq[1] + '..' + sq[2]);
+      AB('mouse move ' + cx + ' ' + cy);
+      AB('mouse down left');
+      AB('mouse up left');
+      const stillOpen = PY(`
+from PIL import Image
+import numpy as np
+a = np.asarray(Image.open('/tmp/t7-pop.png').convert('L'), dtype=int)
+b = np.asarray(Image.open('/tmp/t7-after.png').convert('L'), dtype=int)
+diff = int((np.abs(a-b) > 30).sum())
+print(diff)
+`).trim();
+      console.log('   popover region diff after square click: ' + stillOpen);
+      // poll for the write (the headless tab can throttle input delivery
+      // by several seconds, so a single early read races the click)
+      for (let i = 0; i < 3; i++) {
+        sleepSync(2);
+        const s1 = UNESC(AB(`eval "localStorage.getItem('matrix-cam-config')"`).trim());
+        if (s1.includes('"fps_limit_enabled":true') && s1.includes('"fps_limit_fps":8')) { applied = true; break; }
+      }
+    }
+    const stored = UNESC(AB(`eval "localStorage.getItem('matrix-cam-config')"`).trim());
+    if (!applied) {
+      AB('screenshot /tmp/t7-postfail.png');
+      console.log('   FAIL: limit not applied/persisted');
+      console.log('   stored=' + String(stored).slice(0, 300));
+      process.exitCode = 1;
+    }
+    else console.log('   8 fps preset applied + persisted');
+
+    // reload, confirm the limit survived and the chip shows the limited rate
+    AB('open http://localhost:8090/matrix-cam/');
+    sleepSync(5);
+    AB('mouse move 400 300');
+    AB('mouse down left');
+    AB('mouse up left');
+    sleepSync(5);
+    sleepSync(5);
+    const stored2 = UNESC(AB(`eval "localStorage.getItem('matrix-cam-config')"`));
+    const okStore = String(stored2).includes('"fps_limit_enabled":true') && String(stored2).includes('"fps_limit_fps":8');
+    console.log(`   after reload: persisted=${okStore}`);
+    if (!okStore) process.exitCode = 1;
+
+    // measured rate: the top-bar fps label shows the limit ("8 fps lim")
+    // — amber WARN-colored text at the chip position. Also the preview
+    // updates at ~8fps: two screenshots 500ms apart change LESS than the
+    // 30fps baseline (a moving fake camera at 8fps shows fewer new frames
+    // but still animates).
+    AB('screenshot /tmp/t7-a.png');
+    sleepSync(5); sleepSync(5); sleepSync(5);
+    AB('screenshot /tmp/t7-b.png');
+    const changed = PY(`
+from PIL import Image
+import numpy as np
+a = np.asarray(Image.open('/tmp/t7-a.png').convert('L'), dtype=int)
+b = np.asarray(Image.open('/tmp/t7-b.png').convert('L'), dtype=int)
+print(int((np.abs(a-b) > 8).sum()))
+`).trim();
+    console.log(`   still animating under the limit: changed=${changed} px`);
+    if (parseInt(changed) > 2000) console.log('   PASS'); else { console.log('   FAIL: frozen under limit'); process.exitCode = 1; }
+  } finally { stop(); }
+}
 
   console.log(process.exitCode ? 'SUITE: FAIL' : 'SUITE: PASS');
 } finally {

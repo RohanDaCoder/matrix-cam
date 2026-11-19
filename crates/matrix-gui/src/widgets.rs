@@ -272,12 +272,20 @@ pub fn chip(ui: &mut Ui, text: &str, color: Color32, tooltip: &str) -> Response 
         color,
     );
     let size = gal.size() + Vec2::new(10.0, 4.0);
-    let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
     let p = ui.painter_at(rect);
+    let hovered = resp.hovered();
     for c in round_rect(rect, R_CTL) {
-        p.rect_filled(c, egui::Rounding::same(0.0), BG1);
+        p.rect_filled(c, egui::Rounding::same(0.0), if hovered { BG2 } else { BG1 });
     }
-    p.rect_stroke(rect, egui::Rounding::same(R_CTL), egui::Stroke::new(1.0_f32, color.gamma_multiply(0.55)));
+    p.rect_stroke(
+        rect,
+        egui::Rounding::same(R_CTL),
+        egui::Stroke::new(
+            1.0_f32,
+            if hovered { color } else { color.gamma_multiply(0.55) },
+        ),
+    );
     p.galley(pos2(rect.left() + 5.0, rect.center().y - gal.size().y / 2.0), gal, color);
     resp.on_hover_text(tooltip.to_string())
 }
@@ -497,3 +505,26 @@ pub fn tool_button(ui: &mut Ui, glyph: &str, tooltip: &str, active: bool) -> Res
 // re-export Align2 use marker (keeps import list honest)
 #[allow(dead_code)]
 fn _a(_: Align2) {}
+
+/// Compact preset square for the fps popover: label + accent fill when
+/// it is the live limit, hover brightens. 30x22.
+pub fn fps_square(ui: &mut Ui, label: &str, active: bool) -> Response {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(30.0, 22.0), Sense::click());
+    let p = ui.painter_at(rect);
+    let hovered = resp.hovered();
+    for c in round_rect(rect, 4.0) {
+        p.rect_filled(c, egui::Rounding::same(0.0), if active { ACCENT } else if hovered { BG2 } else { BG1 });
+    }
+    p.rect_stroke(rect, egui::Rounding::same(4.0), egui::Stroke::new(1.0_f32, if active { ACCENT } else { LINE }));
+    let gal = p.layout_no_wrap(
+        label.to_owned(),
+        egui::FontId::new(11.0, egui::FontFamily::Monospace),
+        if active { BG0 } else if hovered { FG } else { FG2 },
+    );
+    p.galley(
+        pos2(rect.center().x - gal.size().x / 2.0, rect.center().y - gal.size().y / 2.0),
+        gal,
+        if active { BG0 } else if hovered { FG } else { FG2 },
+    );
+    resp
+}
